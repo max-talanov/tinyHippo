@@ -17,6 +17,6 @@ OLM
 
 ## Bidirectional replay overview
 
-[heatmap](/figures/bidir_replay_fig2_heatmap.png)
+![heatmap](/figures/bidir_replay_fig2_heatmap.png)
 
-[overview](/figures/bidir_replay_fig1_overview.png)
+![overview](/figures/bidir_replay_fig1_overview.png)
