@@ -4,7 +4,7 @@
 #SBATCH --error=Nest_replay_%A_%a.slurmerr
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=100
+#SBATCH --cpus-per-task=64
 #SBATCH --time=06:00:00
 #SBATCH --partition=acc
 
