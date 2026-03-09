@@ -219,17 +219,16 @@ def bernoulli_connect(pre, post, prob, weight, delay):
     )
 
 
-def conn_stats(label, pre, post):
-    pre_nc  = _to_nc(pre);  post_nc = _to_nc(post)
-    conns   = nest.GetConnections(pre_nc, post_nc)
-    n_pre, n_post = len(pre_nc), len(post_nc)
-    try:
-        n_conn = conns.get("source").size
-    except Exception:
-        n_conn = len(conns)
-    density = n_conn / (n_pre * n_post) if n_pre * n_post > 0 else 0.0
-    print(f"  {label:32s}: {n_conn:9,d} conns | density={density:.5f} | "
-          f"out={n_conn/max(n_pre,1):.1f} | in={n_conn/max(n_post,1):.1f}")
+def conn_stats(label, n_pre, n_post, n_conn_expected):
+    """
+    Lightweight connectivity summary using expected synapse count.
+    Does NOT call nest.GetConnections() — that does a serial Python-level
+    scan over all synapses and takes hours on large populations.
+    Counts are exact for fixed_indegree, approximate for pairwise_bernoulli.
+    """
+    density = n_conn_expected / (n_pre * n_post) if n_pre * n_post > 0 else 0.0
+    print(f"  {label:32s}: ~{n_conn_expected:9,d} conns | density={density:.5f} | "
+          f"out~{n_conn_expected/max(n_pre,1):.1f} | in~{n_conn_expected/max(n_post,1):.1f}")
 
 
 def mean_rate(pop, spk, sim_ms):
@@ -634,21 +633,55 @@ def build_replay_network(
 
     print(f"\n  Total build time: {time.perf_counter()-t0:.1f}s")
 
-    # ---- Connectivity stats -------------------------------------------------
-    print("\n=== Connectivity stats ===")
-    conn_stats("CA3 SUP->SUP  (S-S)", CA3_SUP,      CA3_SUP)
-    conn_stats("CA3 SUP->DEEP (S-D)", CA3_SUP,      CA3_DEEP)
-    conn_stats("CA3 DEEP->DEEP(D-D)", CA3_DEEP,     CA3_DEEP)
-    conn_stats("CA3 DEEP->SUP (D-S)", CA3_DEEP,     CA3_SUP)
-    conn_stats("Seq SUP g0->g1",
-               nest.NodeCollection(ca3_sup_groups[0]),
-               nest.NodeCollection(ca3_sup_groups[1]))
-    conn_stats("CA3 SUP->INT_SUP",    CA3_SUP,      CA3_INT_SUP)
-    conn_stats("CA3 INT_SUP->SUP",    CA3_INT_SUP,  CA3_SUP)
-    conn_stats("CA3 DEEP->INT_DEEP",  CA3_DEEP,     CA3_INT_DEEP)
-    conn_stats("CA3 INT_DEEP->DEEP",  CA3_INT_DEEP, CA3_DEEP)
-    conn_stats("Sch SUP->CA1 PYR",    CA3_SUP,      CA1_PYR)
-    conn_stats("Sch DEEP->CA1 PYR",   CA3_DEEP,     CA1_PYR)
+    # ---- Connectivity stats (lightweight — no GetConnections) ---------------
+    print("\n=== Connectivity stats (expected synapse counts) ===")
+    gs_sup_n  = N_ca3_sup  // n_seq_groups
+    gs_deep_n = N_ca3_deep // n_seq_groups
+
+    # Sequence chain (pairwise_bernoulli — expected counts)
+    conn_stats("CA3 SUP->SUP  (S-S)", N_ca3_sup,  N_ca3_sup,
+               int(n_seq_groups * gs_sup_n * (p_sup_local * gs_sup_n        # local
+               + p_seq_fwd * gs_sup_n + p_seq_bwd * gs_sup_n)))             # fwd+bwd
+    conn_stats("CA3 SUP->DEEP (S-D)", N_ca3_sup,  N_ca3_deep,
+               int(n_seq_groups * gs_sup_n * p_sup_to_deep * gs_deep_n))
+    conn_stats("CA3 DEEP->DEEP(D-D)", N_ca3_deep, N_ca3_deep,
+               int(n_seq_groups * gs_deep_n * (p_deep_local * gs_deep_n
+               + p_deep_fwd * gs_deep_n)))
+    conn_stats("CA3 DEEP->SUP (D-S)", N_ca3_deep, N_ca3_sup,
+               int(n_seq_groups * gs_deep_n * p_deep_to_sup * gs_sup_n))
+    conn_stats("Seq SUP g0->g1",      gs_sup_n,   gs_sup_n,
+               int(p_seq_fwd * gs_sup_n * gs_sup_n))
+
+    # E<->I (fixed_indegree — exact)
+    conn_stats("CA3 SUP->INT_SUP",  N_ca3_sup,       N_ca3_int_sup,
+               N_ca3_int_sup  * K("ca3_EI_sup",   N_ca3_sup))
+    conn_stats("CA3 INT_SUP->SUP",  N_ca3_int_sup,   N_ca3_sup,
+               N_ca3_sup      * K("ca3_IE_sup",   N_ca3_int_sup))
+    conn_stats("CA3 DEEP->INT_DEEP",N_ca3_deep,      N_ca3_int_deep,
+               N_ca3_int_deep * K("ca3_EI_deep",  N_ca3_deep))
+    conn_stats("CA3 INT_DEEP->DEEP",N_ca3_int_deep,  N_ca3_deep,
+               N_ca3_deep     * K("ca3_IE_deep",  N_ca3_int_deep))
+
+    # Schaffer (fixed_indegree — exact)
+    conn_stats("Sch SUP->CA1 PYR",  N_ca3_sup,  N_ca1_pyr,
+               N_ca1_pyr    * K("schaffer_sup_pyr",  N_ca3_sup))
+    conn_stats("Sch DEEP->CA1 PYR", N_ca3_deep, N_ca1_pyr,
+               N_ca1_pyr    * K("schaffer_deep_pyr", N_ca3_deep))
+    conn_stats("Sch SUP->CA1 BSK",  N_ca3_sup,  N_ca1_basket,
+               N_ca1_basket * K("schaffer_sup_basket",  N_ca3_sup))
+    conn_stats("Sch DEEP->CA1 BSK", N_ca3_deep, N_ca1_basket,
+               N_ca1_basket * K("schaffer_deep_basket", N_ca3_deep))
+
+    # Total synapse count
+    total_synapses = (
+        N_ca1_pyr    * K("schaffer_sup_pyr",   N_ca3_sup)
+        + N_ca1_pyr  * K("schaffer_deep_pyr",  N_ca3_deep)
+        + N_ca3_sup  * K("ca3_IE_sup",         N_ca3_int_sup)
+        + N_ca3_deep * K("ca3_IE_deep",        N_ca3_int_deep)
+        + N_ca3_int_sup  * K("ca3_EI_sup",     N_ca3_sup)
+        + N_ca3_int_deep * K("ca3_EI_deep",    N_ca3_deep)
+    )
+    print(f"  {'Total synapses (approx)':32s}: ~{total_synapses:,d}")
 
     return dict(
         PYR=CA1_PYR, BASKET=CA1_BASKET, OLM=CA1_OLM,
