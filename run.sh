@@ -41,7 +41,7 @@ PY
 mkdir -p "$OUTDIR"
 
 srun --cpu-bind=cores --distribution=block:block \
-  python3 -u "$SCRIPT_DIR/replay_scaled.py" \
+  python3 -u "replay_scaled.py" \
     --scale    "$SCALE" \
     --sim-ms   "$SIM_MS" \
     --threads  "$SLURM_CPUS_PER_TASK" \
