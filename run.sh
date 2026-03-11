@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=HIPPO_REPLAY
+#SBATCH --job-name=HIPPO_NEST
 #SBATCH --output=Nest_replay_%A_%a.slurmout
 #SBATCH --error=Nest_replay_%A_%a.slurmerr
 #SBATCH --nodes=1
