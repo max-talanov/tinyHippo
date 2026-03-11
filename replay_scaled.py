@@ -69,6 +69,12 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
+try:
+    import h5py as _h5py_module
+    _HDF5_AVAILABLE = True
+except ImportError:
+    _HDF5_AVAILABLE = False
+
 import nest
 from tiny import (
     safe_set_seeds,
@@ -889,6 +895,139 @@ def print_report(net, sim_ms, scale_label):
 
 
 # ============================================================================
+# HDF5 export  (offline plotting on any machine — no NEST required)
+# ============================================================================
+
+def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
+    """
+    Save all simulation results to an HDF5 file for offline plotting.
+
+    Schema
+    ------
+    /                       — root attrs: metadata
+    /times_ms               — bin-centre times [n_bins]
+    /stats                  — attrs: spearman rho/pval, mean firing rates
+    /ca3_sup/
+        spk_times           — raw spike times   (float32, compressed)
+        spk_senders         — raw spike senders (int32,   compressed)
+        rate                — population-mean rate [n_bins]  (Hz)
+        group_ids           — seq-group membership [n_groups, gs]  (int32)
+        heatmap             — per-group rate  [n_groups, n_bins]   (float32)
+    /ca3_deep/              — same structure (no heatmap)
+    /ca3_int_sup/           — spk_times, spk_senders, rate
+    /ca3_int_deep/          — spk_times, spk_senders, rate
+    /ca1_pyr/               — spk_times, spk_senders, rate
+    /ca1_basket/            — spk_times, spk_senders, rate
+    /ca1_olm/               — spk_times, spk_senders, rate
+    """
+    if not _HDF5_AVAILABLE:
+        print(">>> [WARNING] h5py not installed — skipping HDF5 export.")
+        return
+
+    import h5py
+    import datetime
+
+    edges    = np.arange(0.0, sim_ms + bin_ms, bin_ms)
+    times_ms = (edges[:-1] + bin_ms / 2.0).astype(np.float32)
+
+    # (h5_group_name, net_population_key, net_spike_recorder_key)
+    pop_map = [
+        ("ca3_sup",      "CA3_SUP",      "spk_ca3_sup"),
+        ("ca3_deep",     "CA3_DEEP",     "spk_ca3_deep"),
+        ("ca3_int_sup",  "CA3_INT_SUP",  "spk_ca3_int_sup"),
+        ("ca3_int_deep", "CA3_INT_DEEP", "spk_ca3_int_deep"),
+        ("ca1_pyr",      "PYR",          "spk_pyr"),
+        ("ca1_basket",   "BASKET",       "spk_ba"),
+        ("ca1_olm",      "OLM",          "spk_olm"),
+    ]
+
+    # Pre-fetch all spike arrays once (GetStatus is fast but called only once)
+    spk_cache = {}
+    for h5_key, pop_key, spk_key in pop_map:
+        spk_cache[h5_key] = _get_spikes(net[spk_key])
+
+    compress = dict(compression="gzip", compression_opts=4)
+
+    with h5py.File(outpath, "w") as h5:
+        # --- root metadata ---------------------------------------------------
+        h5.attrs["created_utc"]   = datetime.datetime.utcnow().isoformat()
+        h5.attrs["sim_ms"]        = float(sim_ms)
+        h5.attrs["dt_ms"]         = float(bin_ms)
+        h5.attrs["scale"]         = scale_label
+        h5.attrs["n_groups"]      = int(net["n_seq_groups"])
+        h5.attrs["swr_fwd_start"] = float(net["swr_fwd"][0])
+        h5.attrs["swr_fwd_stop"]  = float(net["swr_fwd"][1])
+        h5.attrs["swr_rev_start"] = float(net["swr_rev"][0])
+        h5.attrs["swr_rev_stop"]  = float(net["swr_rev"][1])
+        try:
+            import nest as _nest
+            h5.attrs["nest_version"] = _nest.__version__
+        except Exception:
+            pass
+
+        h5.create_dataset("times_ms", data=times_ms)
+
+        # --- per-population groups -------------------------------------------
+        for h5_key, pop_key, spk_key in pop_map:
+            t_spk, s_spk = spk_cache[h5_key]
+            n_cells       = int(len(net[pop_key]))
+
+            g = h5.create_group(h5_key)
+            g.attrs["n_cells"] = n_cells
+            g.create_dataset("spk_times",   data=t_spk.astype(np.float32), **compress)
+            g.create_dataset("spk_senders", data=s_spk.astype(np.int32),   **compress)
+
+            counts, _ = np.histogram(t_spk, bins=edges)
+            rate = (counts / (bin_ms / 1e3) / max(n_cells, 1)).astype(np.float32)
+            g.create_dataset("rate", data=rate)
+
+        # --- sequence group membership (CA3 SUP + DEEP) ----------------------
+        sup_groups  = net["ca3_sup_groups"]
+        deep_groups = net["ca3_deep_groups"]
+        n_groups    = int(net["n_seq_groups"])
+        gs_sup      = len(sup_groups[0])
+        gs_deep     = len(deep_groups[0])
+
+        sup_ids_arr  = np.array(sup_groups,  dtype=np.int32)   # [n_groups, gs_sup]
+        deep_ids_arr = np.array(deep_groups, dtype=np.int32)   # [n_groups, gs_deep]
+        h5["ca3_sup"].create_dataset("group_ids",  data=sup_ids_arr,  **compress)
+        h5["ca3_deep"].create_dataset("group_ids", data=deep_ids_arr, **compress)
+
+        # --- CA3 SUP sequence heatmap  [n_groups × n_bins] -------------------
+        t_sup, s_sup = spk_cache["ca3_sup"]
+        heat = np.zeros((n_groups, len(times_ms)), dtype=np.float32)
+        for k, grp in enumerate(sup_groups):
+            m = np.isin(s_sup, np.asarray(grp, dtype=np.int64))
+            counts, _ = np.histogram(t_sup[m], bins=edges)
+            heat[k] = counts / (bin_ms / 1e3) / max(gs_sup, 1)
+        h5["ca3_sup"].create_dataset("heatmap", data=heat, **compress)
+
+        # --- CA3 DEEP sequence heatmap ---------------------------------------
+        t_deep, s_deep = spk_cache["ca3_deep"]
+        heat_d = np.zeros((n_groups, len(times_ms)), dtype=np.float32)
+        for k, grp in enumerate(deep_groups):
+            m = np.isin(s_deep, np.asarray(grp, dtype=np.int64))
+            counts, _ = np.histogram(t_deep[m], bins=edges)
+            heat_d[k] = counts / (bin_ms / 1e3) / max(gs_deep, 1)
+        h5["ca3_deep"].create_dataset("heatmap", data=heat_d, **compress)
+
+        # --- replay quality stats --------------------------------------------
+        sg = h5.create_group("stats")
+        for label_key, win in [("fwd", net["swr_fwd"]), ("rev", net["swr_rev"])]:
+            rho, pval = replay_score(t_sup, s_sup, sup_groups, win[0] - 5, win[1] + 30)
+            sg.attrs[f"rho_{label_key}"]  = float(rho)  if (rho  is not None and not np.isnan(rho))  else float("nan")
+            sg.attrs[f"pval_{label_key}"] = float(pval) if (pval is not None and not np.isnan(pval)) else float("nan")
+
+        # mean firing rates (scalar per population)
+        for h5_key, pop_key, _ in pop_map:
+            t_spk, _ = spk_cache[h5_key]
+            n_cells   = int(len(net[pop_key]))
+            sg.attrs[f"mean_rate_{h5_key}"] = float(len(t_spk) / (n_cells * sim_ms / 1000.0))
+
+    print(f">>> Saved HDF5: {outpath}")
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -920,6 +1059,11 @@ MareNostrum5 submission examples:
     parser.add_argument(
         "--no-figures", action="store_true",
         help="Skip figure generation — recommended for 12pct/100pct on HPC")
+    parser.add_argument(
+        "--out-hdf5", type=str, default=None, metavar="FILE",
+        help="Path for the output HDF5 file (e.g. results_1pct/replay_1pct.h5). "
+             "If omitted, a file is written automatically alongside any figures. "
+             "Use this to separate HPC computation from local plotting.")
     args = parser.parse_args()
 
     cfg = SCALE_CONFIGS[args.scale]
@@ -966,17 +1110,32 @@ MareNostrum5 submission examples:
 
     print_report(net, SIM_MS, cfg["label"])
 
+    # ---- HDF5 export --------------------------------------------------------
+    # Always determine an output directory so the HDF5 path is predictable.
+    out_dir = os.path.join(_script_dir, f"replay_output_{args.scale}")
+    os.makedirs(out_dir, exist_ok=True)
+
+    hdf5_path = (args.out_hdf5
+                 if args.out_hdf5
+                 else os.path.join(out_dir, f"replay_{args.scale}.h5"))
+    # Ensure parent directory exists when user supplies a custom path.
+    os.makedirs(os.path.dirname(os.path.abspath(hdf5_path)), exist_ok=True)
+
+    print("\n>>> Saving results to HDF5...")
+    save_replay_hdf5(net, SIM_MS, cfg["label"], hdf5_path)
+
+    # ---- Optional local figure generation -----------------------------------
     if not args.no_figures:
         print("\n>>> Generating figures...")
-        out_dir = os.path.join(_script_dir, f"replay_output_{args.scale}")
-        os.makedirs(out_dir, exist_ok=True)
-        prefix  = os.path.join(out_dir, f"bidir_replay_{args.scale}")
-        paths   = plot_bidirectional_replay(net, sim_ms=SIM_MS, save_prefix=prefix)
+        prefix = os.path.join(out_dir, f"bidir_replay_{args.scale}")
+        paths  = plot_bidirectional_replay(net, sim_ms=SIM_MS, save_prefix=prefix)
         print(f">>> Figures saved to: {out_dir}/")
         for pp in paths:
             print(f"    {os.path.basename(pp)}")
     else:
         print("\n>>> Figure generation skipped (--no-figures).")
+        print(f"    To plot locally, run:")
+        print(f"    python replay_plot_from_hdf5.py --in {hdf5_path} --save-prefix replay_plots/run1")
 
     print(f"\n>>> Total wall time: {time.perf_counter()-t_wall:.1f}s")
     print(">>> Done.")
