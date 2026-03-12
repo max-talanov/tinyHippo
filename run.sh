@@ -3,8 +3,8 @@
 #SBATCH --output=Nest_replay_%A_%a.slurmout
 #SBATCH --error=Nest_replay_%A_%a.slurmerr
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --ntasks=3
+#SBATCH --cpus-per-task=20
 #SBATCH --time=06:00:00
 #SBATCH --partition=gp_bsccs        # CPU partition on MN5  (was: acc = GPU partition)
 
