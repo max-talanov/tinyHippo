@@ -10,7 +10,7 @@
 
 # Scale: 1pct | 12pct | 100pct
 # Override at submission: sbatch --export=ALL,SCALE=12pct run.sh
-SCALE=${SCALE:-1pct}
+SCALE=${SCALE:-12pct}
 SIM_MS=${SIM_MS:-1000}
 OUTDIR="results"          # no trailing slash — kept consistent with --out-hdf5
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
