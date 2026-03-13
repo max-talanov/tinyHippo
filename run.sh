@@ -3,14 +3,14 @@
 #SBATCH --output=Nest_replay_%A_%a.slurmout
 #SBATCH --error=Nest_replay_%A_%a.slurmerr
 #SBATCH --nodes=1
-#SBATCH --ntasks=3
-#SBATCH --cpus-per-task=20
+#SBATCH --ntasks=5
+#SBATCH --cpus-per-task=10
 #SBATCH --time=06:00:00
 #SBATCH --partition=gp_bsccs        # CPU partition on MN5  (was: acc = GPU partition)
 
 # Scale: 1pct | 12pct | 100pct
 # Override at submission: sbatch --export=ALL,SCALE=12pct run.sh
-SCALE=${SCALE:-12pct}
+SCALE=${SCALE:-100pct}
 SIM_MS=${SIM_MS:-1000}
 OUTDIR="results"          # no trailing slash — kept consistent with --out-hdf5
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
