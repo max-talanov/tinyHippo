@@ -199,13 +199,60 @@ def _to_nc(x):
     return nest.NodeCollection([int(i) for i in x])
 
 
+_NEST_MAX_LCID = 134_217_726          # 2^27 - 2: hard NEST per-VP per-synapse limit
+_conn_count_per_vp: dict = {}         # cumulative static_synapse connections per VP
+
+
+def _preflight_conn_check(pre_size: int, post_size: int, indegree: int, label: str = "") -> None:
+    """Raise an informative error before NEST does if adding this fixed_indegree
+    connection would push the cumulative static_synapse count past NEST's limit."""
+    ks  = nest.GetKernelStatus()
+    thr = ks.get("local_num_threads", ks.get("num_threads", ks.get("threads", 1)))
+    mpi = ks.get("total_num_processes",
+                  ks.get("num_processes", ks.get("mpi_num_processes", 1)))
+    n_vp = max(thr * mpi, 1)
+
+    new_total   = post_size * indegree
+    new_per_vp  = new_total / n_vp
+    prev        = _conn_count_per_vp.get("static_synapse", 0.0)
+    after       = prev + new_per_vp
+
+    tag = f" [{label}]" if label else ""
+    print(f"  [conn-check{tag}] +{new_per_vp:,.0f}/VP  cumul={after:,.0f}/VP  "
+          f"limit={_NEST_MAX_LCID:,}  VPs={n_vp}  ({after/_NEST_MAX_LCID*100:.1f}%)")
+
+    if after > _NEST_MAX_LCID:
+        raise RuntimeError(
+            f"\n[Too many connections — would exceed NEST limit BEFORE calling Connect]\n"
+            f"  Connection{tag}: {pre_size} pre × {post_size} post, indegree={indegree}\n"
+            f"  This call adds ~{new_per_vp:,.0f} synapses/VP to static_synapse.\n"
+            f"  Cumulative after this call: {after:,.0f}/VP  (limit {_NEST_MAX_LCID:,})\n"
+            f"  Current VPs: {mpi} MPI × {thr} threads = {n_vp}\n\n"
+            f"  Fixes:\n"
+            f"   1) Increase MPI ranks: add --ntasks-per-node=2 (doubles VPs per node)\n"
+            f"   2) Verify NEST actually accepted local_num_threads={thr} (check VP printout above)\n"
+            f"   3) Reduce INDEGREES['schaffer_sup_pyr'/'schaffer_deep_pyr'] until sum < "
+            f"{int(_NEST_MAX_LCID * n_vp / post_size):,}\n"
+        )
+    _conn_count_per_vp["static_synapse"] = after
+
+
 def fixed_connect(pre, post, indegree, weight, delay):
     """
     NEST native fixed_indegree — C++, fully MPI-parallel.
+    Pre-flight checks cumulative static_synapse count vs NEST's 134M/VP limit.
     Each post neuron receives exactly `indegree` inputs drawn from pre.
     """
+    pre_nc  = _to_nc(pre)
+    post_nc = _to_nc(post)
+    _preflight_conn_check(
+        pre_size  = len(pre_nc),
+        post_size = len(post_nc),
+        indegree  = int(indegree),
+        label     = f"pre={len(pre_nc)} post={len(post_nc)} K={indegree}",
+    )
     nest.Connect(
-        _to_nc(pre), _to_nc(post),
+        pre_nc, post_nc,
         conn_spec={"rule": "fixed_indegree", "indegree": int(indegree)},
         syn_spec={"weight": float(weight), "delay": float(delay)},
     )
@@ -398,6 +445,25 @@ def build_replay_network(
         "print_time":        True,
         "overwrite_files":   True,
     })
+
+    # --- VP verification (critical: NEST may silently ignore local_num_threads) ---
+    ks_post = nest.GetKernelStatus()
+    actual_thr = ks_post.get("local_num_threads",
+                  ks_post.get("num_threads", ks_post.get("threads", 1)))
+    actual_mpi = ks_post.get("total_num_processes",
+                  ks_post.get("num_processes",
+                  ks_post.get("mpi_num_processes", 1)))
+    n_vp_actual = actual_thr * actual_mpi
+    print(f"  NEST kernel: {actual_mpi} MPI rank(s) × {actual_thr} thread(s) = {n_vp_actual} VP(s)")
+    if actual_thr != n_threads:
+        import warnings
+        warnings.warn(
+            f"[NEST thread mismatch] requested {n_threads} threads but NEST "
+            f"accepted {actual_thr}. VPs={n_vp_actual}. "
+            f"Connection limit may be hit if VPs < MPI_ranks × requested_threads.",
+            RuntimeWarning, stacklevel=2,
+        )
+
     safe_set_seeds()
 
     try:
