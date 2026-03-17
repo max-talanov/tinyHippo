@@ -25,7 +25,6 @@ import sys
 import numpy as np
 import h5py
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
@@ -77,6 +76,10 @@ def main():
                     help="Subsample rasters to this many spikes for speed "
                          "(default 300000; 0 = no limit)")
     args = ap.parse_args()
+
+    # Switch to non-GUI backend only when saving silently
+    if args.save_prefix and not args.show:
+        matplotlib.use("Agg")
 
     if args.save_prefix:
         import os
