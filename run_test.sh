@@ -2,44 +2,41 @@
 #SBATCH --job-name=HIPPO_NEST
 #SBATCH --output=Nest_replay_%A_%a.slurmout
 #SBATCH --error=Nest_replay_%A_%a.slurmerr
-#SBATCH --nodes=8                  # 8 nodes  → ~2 TB RAM total (8 × ~256 GB)
-#SBATCH --ntasks=16                # 2 MPI ranks per node  ← KEY FIX (was 8)
-#SBATCH --ntasks-per-node=2        # 2 ranks share each node's 256 GB (~128 GB/rank)
-#SBATCH --cpus-per-task=6          # 16 × 6 = 96 CPUs — same budget as before
+#SBATCH --nodes=256                # 256 nodes  → 256 × ~256 GB = ~65 TB RAM
+#SBATCH --ntasks=1024              # 4 MPI ranks per node
+#SBATCH --ntasks-per-node=4        # 4 ranks × 64 GB = 256 GB/node; ~64 GB/rank
+#SBATCH --cpus-per-task=28         # 1024 × 28 = 28,672 CPUs total
 #SBATCH --time=12:00:00
 #SBATCH --partition=gp_bsccs       # CPU partition on MN5
 
 # ---------------------------------------------------------------------------
-# WHY 16 RANKS?
+# WHY 256 NODES / 1024 RANKS?
 #
-# Previous failure: "Too many connections: at most 134,217,726 per VP"
+# replay_scaled.py SCALE_CONFIGS["100pct"] specifies:
+#   slurm_nodes = 256,  slurm_ntasks = 1024,  estimated runtime = 3–5 h
 #
-# NEST stores connections per Virtual Process (VP = MPI_ranks × threads).
-# If NEST silently falls back to 1 thread, VPs = 8 × 1 = 8, and the
-# Schaffer CA3_SUP→CA1_PYR call alone needs 460,000×3,000/8 = 172,500,000
-# connections/VP — 28% over the hard 134,217,726 limit.
+# MEMORY per rank (1024 ranks):
+#   Schaffer SUP→CA1_PYR : 460k × 3000 synapses × 48 B =  66 GB total → 66 MB/rank
+#   Schaffer DEEP→CA1_PYR: 460k × 1000 synapses × 48 B =  22 GB total → 22 MB/rank
+#   CA3 E↔I, CA1 local, sequence chain, neurons, generators: ~200 MB/rank
+#   Total estimate: ~300–500 MB/rank  ← well within 64 GB/rank
 #
-# With 16 ranks worst-case (threads=1): VPs=16 → 86,250,000/VP — safely under.
-# With 16 ranks best-case (threads=6): VPs=96 → 14,375,000/VP — well under.
+# NEST VP limit (134,217,726 per VP):
+#   VPs = 1024 ranks × 28 threads = 28,672
+#   Schaffer worst-case: 460k × 3000 / 28,672 = 48,120/VP  ← no problem
 #
-# Memory: 2 ranks share one 256 GB node → ~128 GB per rank, ~53k neurons/rank.
-# This mirrors the 12pct run that succeeded on 1 node. ✓
+# PREVIOUS FAILURE (job 37934990):
+#   Root cause 1 — MPI not recognized: every rank printed
+#     "NEST kernel: 1 MPI rank(s) × 6 thread(s) = 6 VP(s)"
+#   meaning each rank allocated the full 845k-neuron network solo.
+#   Schaffer alone = 460k × 4000 × 48 B = 88 GB per rank → OOM on 128 GB/rank.
 #
-# ---------------------------------------------------------------------------
-# IF THIS STILL FAILS — check the new slurmout for this line:
-#   "NEST kernel: N MPI rank(s) × T thread(s) = VP VP(s)"
-# and look for "[conn-check]" lines showing cumulative %  of the 134M limit.
+#   Root cause 2 — Only 8 nodes (16 ranks): even with working MPI the
+#   simulation time would be ~200–320 h, far past the 12 h wall limit.
 #
-# FALLBACK OPTIONS:
-#
-#   If VPs are confirmed low (e.g. threads=1), add more ranks:
-#     sbatch --nodes=8 --ntasks=32 --ntasks-per-node=4 --cpus-per-task=3 run_test.sh
-#     → 32 VPs worst-case; schaffer_sup = 43,125,000/VP ✓
-#
-#   If Schaffer indegrees need trimming (replay_scaled.py INDEGREES dict):
-#     Safe maximum at VPs=N: K_sup + K_deep < 134,217,726 × N / 460,000
-#     E.g. at 16 VPs: max total K < 4,667  (current: 4,000 — already fine)
-#     E.g. at  8 VPs: max total K < 2,334  (reduce schaffer_sup_pyr to ≤1700)
+# MPI FIX: load the MPI-enabled NEST module (see module check below).
+# The serial NEST build silently ignores MPI even when launched with srun.
+# Check available modules with:  module spider nest
 # ---------------------------------------------------------------------------
 
 SCALE=${SCALE:-100pct}
@@ -52,27 +49,63 @@ export LC_ALL=${LC_ALL:-C.UTF-8}
 export PYTHONIOENCODING=utf-8
 export PYTHONUNBUFFERED=1
 
-unset OMP_NUM_THREADS
 export OMP_PROC_BIND=close
 export OMP_PLACES=cores
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 echo "[Slurm] job=$SLURM_JOB_ID nodes=$SLURM_NNODES ntasks=$SLURM_NTASKS cpus-per-task=$SLURM_CPUS_PER_TASK"
 echo "[Slurm] scale=$SCALE sim_ms=$SIM_MS outdir=$OUTDIR"
 
-# NEST sanity check — single process, pre-srun (rank 0 only)
+# ---------------------------------------------------------------------------
+# MPI + NEST sanity check — runs in a single process before srun.
+# This verifies the loaded NEST module was compiled with MPI support.
+# If have_mpi=False, switch to the MPI-enabled module and resubmit.
+# ---------------------------------------------------------------------------
 python3 - <<'PY'
-import nest
+import os, nest
+
 ks = nest.GetKernelStatus()
-mpi = ks.get("mpi_num_processes", ks.get("num_processes", ks.get("total_num_processes", 1)))
-thr = ks.get("local_num_threads", ks.get("num_threads", ks.get("threads", 1)))
-print("nest", nest.__version__, "mpi_procs", mpi, "local_threads", thr)
+have_mpi = ks.get("have_mpi", "key_absent")
+mpi_procs = ks.get("mpi_num_processes",
+              ks.get("num_processes",
+              ks.get("total_num_processes", 1)))
+threads = ks.get("local_num_threads",
+            ks.get("num_threads",
+            ks.get("threads", 1)))
+
+print(f"[pre-flight] NEST {nest.__version__}")
+print(f"[pre-flight] have_mpi        = {have_mpi}")
+print(f"[pre-flight] mpi_num_procs   = {mpi_procs}  (expect 1 here, many after srun)")
+print(f"[pre-flight] local_threads   = {threads}")
+print(f"[pre-flight] PMI_RANK        = {os.environ.get('PMI_RANK',        'NOT_SET')}")
+print(f"[pre-flight] OMPI_COMM_WORLD_RANK = {os.environ.get('OMPI_COMM_WORLD_RANK', 'NOT_SET')}")
+
+if have_mpi is False or have_mpi == False:
+    print()
+    print("ERROR: NEST was built WITHOUT MPI support.")
+    print("       Load the MPI-enabled module, e.g.:")
+    print("         module load NEST/3.9.0-foss-2023a-mpi")
+    print("       Then resubmit this job.")
+    raise SystemExit(1)
+
+print("[pre-flight] MPI check passed — proceeding to srun.")
 PY
+
+# Abort the job if the pre-flight check failed (non-zero exit from python3 block)
+if [ $? -ne 0 ]; then
+    echo "[ERROR] Pre-flight check failed. Job aborted. See slurmout for details."
+    exit 1
+fi
 
 mkdir -p "$OUTDIR"
 
-# env -u OMP_NUM_THREADS: prevents Slurm from re-injecting OMP_NUM_THREADS
-# inside each rank (Slurm sets it from cpus-per-task after our unset above).
-srun --cpu-bind=cores env -u OMP_NUM_THREADS \
+# ---------------------------------------------------------------------------
+# Launch the simulation.
+# --cpu-bind=cores: pins each rank's threads to physical cores on the same NUMA node.
+# OMP_NUM_THREADS is exported above so every rank inherits it from the environment;
+# replay_scaled.py also receives --threads as an explicit argument for clarity.
+# ---------------------------------------------------------------------------
+srun --cpu-bind=cores \
   python3 -u "replay_scaled.py" \
     --scale    "$SCALE" \
     --sim-ms   "$SIM_MS" \
