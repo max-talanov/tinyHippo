@@ -75,7 +75,75 @@ try:
 except ImportError:
     _HDF5_AVAILABLE = False
 
+try:
+    from mpi4py import MPI as _MPI
+    _MPI_AVAILABLE = True
+except ImportError:
+    _MPI_AVAILABLE = False
+
 import nest
+
+
+# ============================================================================
+# MPI helpers
+# ============================================================================
+
+def _mpi_rank() -> int:
+    """Return this process's MPI rank (0 if not running under MPI)."""
+    ks = nest.GetKernelStatus()
+    return int(ks.get("rank", ks.get("process_id", 0)))
+
+
+def _mpi_size() -> int:
+    """Return total number of MPI ranks (1 if not running under MPI)."""
+    ks = nest.GetKernelStatus()
+    return int(ks.get("total_num_processes",
+               ks.get("num_processes",
+               ks.get("mpi_num_processes", 1))))
+
+
+def _gather_spikes(local_t: np.ndarray, local_s: np.ndarray):
+    """
+    Gather spike arrays from all MPI ranks to rank 0, returned sorted by time.
+
+    On rank 0  : returns (all_times, all_senders) merged and time-sorted.
+    On rank > 0: returns (empty, empty) — caller must not use the result.
+
+    Falls back gracefully when mpi4py is unavailable (single-rank case).
+    """
+    if _mpi_size() == 1:
+        # Single rank: nothing to gather
+        order = np.argsort(local_t, kind="stable")
+        return local_t[order], local_s[order]
+
+    if not _MPI_AVAILABLE:
+        # Multi-rank MPI run but mpi4py not importable — warn once from rank 0
+        if _mpi_rank() == 0:
+            import warnings
+            warnings.warn(
+                "mpi4py is not installed.  HDF5 will contain only rank-0 spikes.\n"
+                "Install mpi4py (e.g. pip install mpi4py) for complete data.",
+                RuntimeWarning, stacklevel=3,
+            )
+        # Return local data on rank 0, empty on others — partial but not corrupt
+        if _mpi_rank() == 0:
+            order = np.argsort(local_t, kind="stable")
+            return local_t[order], local_s[order]
+        return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.int32)
+
+    comm = _MPI.COMM_WORLD
+    comm.Barrier()                         # ensure all ranks finished Simulate()
+
+    all_t = comm.gather(local_t, root=0)
+    all_s = comm.gather(local_s, root=0)
+
+    if comm.Get_rank() == 0:
+        t_merged = np.concatenate(all_t).astype(np.float32)
+        s_merged = np.concatenate(all_s).astype(np.int32)
+        order    = np.argsort(t_merged, kind="stable")
+        return t_merged[order], s_merged[order]
+
+    return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.int32)
 from tiny import (
     safe_set_seeds,
     maybe_make_theta_generators,
@@ -1007,10 +1075,24 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
         ("ca1_olm",      "OLM",          "spk_olm"),
     ]
 
-    # Pre-fetch all spike arrays once (GetStatus is fast but called only once)
+    # -------------------------------------------------------------------------
+    # Gather spikes from all MPI ranks to rank 0.
+    #
+    # In an MPI run each rank owns a disjoint subset of neurons, so
+    # nest.GetStatus(spike_recorder, "events") returns ONLY the locally-owned
+    # spikes.  Without gathering, every rank would open the same HDF5 file in
+    # "w" (truncate) mode and write partial data, corrupting gzip chunks.
+    # -------------------------------------------------------------------------
     spk_cache = {}
     for h5_key, pop_key, spk_key in pop_map:
-        spk_cache[h5_key] = _get_spikes(net[spk_key])
+        t_local, s_local = _get_spikes(net[spk_key])
+        # _gather_spikes handles the MPI barrier + gather + sort internally.
+        # On ranks > 0 it returns empty arrays; those ranks skip file I/O below.
+        spk_cache[h5_key] = _gather_spikes(t_local, s_local)
+
+    # Only rank 0 writes the file — all other ranks are done here.
+    if _mpi_rank() != 0:
+        return
 
     compress = dict(compression="gzip", compression_opts=4)
 
@@ -1174,21 +1256,37 @@ MareNostrum5 submission examples:
     nest.Simulate(SIM_MS)
     print(f"    Simulation done in {time.perf_counter()-t_sim:.1f}s")
 
-    print_report(net, SIM_MS, cfg["label"])
+    # -------------------------------------------------------------------------
+    # Post-simulation output: report, HDF5, figures.
+    #
+    # In an MPI run nest.Simulate() is collective (all ranks must call it), but
+    # everything below is output-only.  save_replay_hdf5() gathers spikes
+    # internally and only rank 0 writes the file, so it is safe to call from
+    # every rank.  print_report() and plot_bidirectional_replay() are gated to
+    # rank 0 to avoid N copies of the same console/figure output.
+    # -------------------------------------------------------------------------
+    rank = _mpi_rank()
 
-    # ---- HDF5 export --------------------------------------------------------
-    # Always determine an output directory so the HDF5 path is predictable.
+    # ---- HDF5 export (always — gather+write happens inside, safe for all ranks)
     out_dir = os.path.join(_script_dir, f"replay_output_{args.scale}")
-    os.makedirs(out_dir, exist_ok=True)
+    if rank == 0:
+        os.makedirs(out_dir, exist_ok=True)
 
     hdf5_path = (args.out_hdf5
                  if args.out_hdf5
                  else os.path.join(out_dir, f"replay_{args.scale}.h5"))
-    # Ensure parent directory exists when user supplies a custom path.
-    os.makedirs(os.path.dirname(os.path.abspath(hdf5_path)), exist_ok=True)
+    if rank == 0:
+        os.makedirs(os.path.dirname(os.path.abspath(hdf5_path)), exist_ok=True)
 
-    print("\n>>> Saving results to HDF5...")
+    print(f"\n>>> [rank {rank}] Entering HDF5 export (gather + write on rank 0)...")
     save_replay_hdf5(net, SIM_MS, cfg["label"], hdf5_path)
+
+    # Everything below is rank-0 only
+    if rank != 0:
+        print(f">>> [rank {rank}] Done (non-root rank exiting).")
+        raise SystemExit(0)
+
+    print_report(net, SIM_MS, cfg["label"])
 
     # ---- Optional local figure generation -----------------------------------
     if not args.no_figures:
