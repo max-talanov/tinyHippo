@@ -89,13 +89,25 @@ import nest
 # ============================================================================
 
 def _mpi_rank() -> int:
-    """Return this process's MPI rank (0 if not running under MPI)."""
+    """Return this process's MPI rank (0 if not running under MPI).
+
+    Prefers mpi4py over nest.GetKernelStatus() because NEST may be built
+    without MPI support, in which case every srun task reports rank=0 and
+    all tasks race to write the same HDF5 file.
+    """
+    if _MPI_AVAILABLE:
+        return _MPI.COMM_WORLD.Get_rank()
     ks = nest.GetKernelStatus()
     return int(ks.get("rank", ks.get("process_id", 0)))
 
 
 def _mpi_size() -> int:
-    """Return total number of MPI ranks (1 if not running under MPI)."""
+    """Return total number of MPI ranks (1 if not running under MPI).
+
+    Prefers mpi4py for the same reason as _mpi_rank().
+    """
+    if _MPI_AVAILABLE:
+        return _MPI.COMM_WORLD.Get_size()
     ks = nest.GetKernelStatus()
     return int(ks.get("total_num_processes",
                ks.get("num_processes",
