@@ -58,6 +58,7 @@ import sys
 import os
 import time
 import warnings
+from dataclasses import dataclass
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -164,62 +165,70 @@ from tiny import (
 
 
 # ============================================================================
-# SCALE CONFIGURATIONS
+# GRADUAL SCALE  (any integer percentage 1–100)
 # ============================================================================
 
-SCALE_CONFIGS = {
+# Reference neuron counts at 100% (Andersen et al. 2007)
+_REF_100PCT = dict(
+    N_ca3_sup      = 264_000,
+    N_ca3_deep     =  66_000,
+    N_ca3_int_sup  =  24_000,
+    N_ca3_int_deep =   8_000,
+    N_ca1_pyr      = 460_000,
+    N_ca1_basket   =  14_000,
+    N_ca1_olm      =   9_000,
+)
 
-    # ---- 1% (default) -------------------------------------------------------
-    # All counts divisible by n_seq_groups=20
-    "1pct": dict(
-        label             = "1% scale — test/debug",
-        N_ca3_sup         = 2_640,    # 264k x 0.01 ; /20 = 132/group
-        N_ca3_deep        = 660,      #  66k x 0.01 ; /20 =  33/group
-        N_ca3_int_sup     = 240,
-        N_ca3_int_deep    = 80,
-        N_ca1_pyr         = 4_600,
-        N_ca1_basket      = 140,
-        N_ca1_olm         = 90,
-        n_seq_groups      = 20,
-        n_threads_default = 8,
-        slurm_nodes       = 1,
-        slurm_ntasks      = 4,        # 4 ranks x 8 threads = 32 cores
-    ),
+# Reference counts for cortical modules (kept separate so gradual-scale
+# hippocampal calculations are unaffected when --ec-lii is not requested).
+_REF_CORTEX = dict(
+    N_ec_lii = 100_000,   # EC layer II/III stellate cells (direct CA1 recipient)
+)
 
-    # ---- 12% ----------------------------------------------------------------
-    # All counts divisible by n_seq_groups=50
-    "12pct": dict(
-        label             = "12% scale — HPC development",
-        N_ca3_sup         = 31_500,   # /50 = 630/group
-        N_ca3_deep        = 7_500,    # /50 = 150/group
-        N_ca3_int_sup     = 3_000,
-        N_ca3_int_deep    = 1_000,
-        N_ca1_pyr         = 55_200,
-        N_ca1_basket      = 1_680,
-        N_ca1_olm         = 1_080,
-        n_seq_groups      = 50,
-        n_threads_default = 28,
-        slurm_nodes       = 16,
-        slurm_ntasks      = 64,       # 4 ranks/node x 16 nodes
-    ),
 
-    # ---- 100% ---------------------------------------------------------------
-    # All counts divisible by n_seq_groups=100
-    "100pct": dict(
-        label             = "100% scale — full rat hippocampus",
-        N_ca3_sup         = 264_000,  # /100 = 2640/group
-        N_ca3_deep        = 66_000,   # /100 =  660/group
-        N_ca3_int_sup     = 24_000,
-        N_ca3_int_deep    = 8_000,
-        N_ca1_pyr         = 460_000,
-        N_ca1_basket      = 14_000,
-        N_ca1_olm         = 9_000,
-        n_seq_groups      = 100,
-        n_threads_default = 28,
-        slurm_nodes       = 256,
-        slurm_ntasks      = 1_024,    # 4 ranks/node x 256 nodes
-    ),
-}
+def _round_to_multiple(n: float, m: int) -> int:
+    """Round n to the nearest multiple of m, minimum m."""
+    return max(m, int(round(n / m)) * m)
+
+
+def build_scale_config(pct: int) -> dict:
+    """
+    Build a scale configuration for any integer percentage 1–100.
+
+    n_seq_groups scales as max(10, round(10 * sqrt(pct))):
+      1% → 10 groups,  4% → 20,  25% → 50,  100% → 100
+    This keeps groups-per-population in a biologically sensible range
+    (~130–2640 CA3 SUP neurons per group) regardless of scale.
+
+    All neuron counts are rounded to the nearest multiple of n_seq_groups
+    so that N % n_seq_groups == 0 is always satisfied.
+
+    Suggested CPUs (single-node OpenMP):
+      total_N <   20k → 8   threads
+      total_N <  100k → 16  threads
+      total_N <  300k → 28  threads
+      total_N >= 300k → 50  threads  (full node)
+    """
+    pct = int(pct)
+    if not 1 <= pct <= 100:
+        raise ValueError(f"--scale must be an integer 1–100, got {pct}")
+
+    f = pct / 100.0  # linear scaling factor
+
+    # n_seq_groups: sub-linear so small runs still have meaningful sequences
+    n_groups = max(10, round(10 * pct ** 0.5))
+
+    cfg = {"label": f"{pct}% scale", "n_seq_groups": n_groups}
+    for key, ref in _REF_100PCT.items():
+        cfg[key] = _round_to_multiple(ref * f, n_groups)
+
+    total_N = sum(cfg[k] for k in _REF_100PCT)
+    if   total_N <  20_000:  cfg["n_threads_default"] = 8
+    elif total_N < 100_000:  cfg["n_threads_default"] = 16
+    elif total_N < 300_000:  cfg["n_threads_default"] = 28
+    else:                    cfg["n_threads_default"] = 50
+
+    return cfg
 
 
 # ============================================================================
@@ -254,6 +263,8 @@ TARGET_INDEGREE = {
     "ca1_EI"               :    10,
     "ca1_IE"               :    50,
     "ca1_OE"               :    20,
+    # Cortical projections (phase 1+)
+    "ca1_ec_lii"           :   500,   # CA1 PYR -> EC LII (Naber et al. 2001)
 }
 
 
@@ -856,6 +867,136 @@ def build_replay_network(
 
 
 # ============================================================================
+# EC LII/III module  (Phase 1 cortical addition)
+# ============================================================================
+
+@dataclass
+class ECModule:
+    """
+    Entorhinal cortex layer II/III — minimal cortical consolidation target.
+
+    Kept as a self-contained dataclass so it can be built optionally (via
+    --ec-lii) without touching any existing hippocampal code.  The
+    conns_ca1_ec attribute gives the STC hook direct access to the CA1→EC
+    STDP synapse collection for between-SWR weight snapshots.
+
+    Attributes
+    ----------
+    population    NEST NodeCollection  — EC LII/III stellate cells
+    spike_rec     NEST NodeCollection  — spike recorder attached to population
+    conns_ca1_ec  NEST SynapseCollection — CA1→EC STDP synapses (STC hook)
+    N             neuron count
+    K_ca1_ec      fixed in-degree used for the CA1→EC projection
+    w_init        initial synaptic weight
+    """
+    population   : object   # nest.NodeCollection
+    spike_rec    : object   # nest.NodeCollection  (spike_recorder)
+    conns_ca1_ec : object   # nest.SynapseCollection
+    N            : int
+    K_ca1_ec     : int
+    w_init       : float
+
+
+def build_ec_lii(
+    ca1_pyr,
+    N_ec_lii      : int,
+    K_ca1_ec      : int   = 500,
+    w_ca1_ec      : float = 1.0,
+    delay_ca1_ec  : float = 3.0,    # axonal conduction delay [ms]
+    rate_bg       : float = 200.0,  # tonic background Poisson drive [Hz]
+    w_bg          : float = 1.5,
+    tau_plus      : float = 20.0,   # STDP pre->post time constant [ms]
+    A_plus        : float = 0.01,   # STDP potentiation step (= lambda in NEST)
+    A_minus       : float = 0.008,  # STDP depression step  (= alpha*lambda)
+    Wmax          : float = 2.0,
+) -> ECModule:
+    """
+    Create EC LII/III population and connect it to CA1 with STDP synapses.
+
+    Neuron model
+    ------------
+    Izhikevich with stellate-cell parameters (regular spiking, less adapting
+    than CA3 SUP): a=0.02, b=0.2, c=-65, d=6 (d=8 would be more adapting).
+    Initial membrane potential set at rest (-65 mV).
+
+    CA1 → EC projection
+    -------------------
+    Rule         : fixed_indegree  (K per EC neuron, C++-parallel)
+    Synapse model: stdp_synapse (additive, mu_plus=mu_minus=0)
+      NEST params: lambda = A_plus,  alpha = A_minus / A_plus
+    Delay        : 3 ms (hippocampal-entorhinal axonal conduction)
+
+    The SWR replay step (~3.8 ms/group at 10%) is well inside the STDP LTP
+    window (tau_plus=20 ms), so forward replay potentiates CA1→EC weights
+    and reverse replay depresses them — the asymmetry needed for STC.
+
+    Returns
+    -------
+    ECModule with conns_ca1_ec stored for the later STC weight-read hook.
+    """
+    import nest   # local import keeps module importable without NEST installed
+
+    t0 = time.perf_counter()
+    print(f"\n  [ECModule] Building EC LII/III  N={N_ec_lii:,}  "
+          f"K_ca1_ec={K_ca1_ec}  w_init={w_ca1_ec}")
+
+    # ---- Stellate cell parameters (Izhikevich) ----------------------------
+    ec_params = dict(a=0.02, b=0.2, c=-65.0, d=6.0,
+                     V_m=-65.0, U_m=-13.0, I_e=0.0)
+    EC_LII = nest.Create("izhikevich", N_ec_lii, params=ec_params)
+
+    # ---- Tonic background drive (keeps EC cells in realistic firing range) -
+    bg = nest.Create("poisson_generator", N_ec_lii, params={"rate": float(rate_bg)})
+    nest.Connect(bg, EC_LII, conn_spec="one_to_one",
+                 syn_spec={"weight": float(w_bg), "delay": 1.0})
+
+    # ---- CA1 → EC : fixed_indegree, stdp_synapse --------------------------
+    # NEST stdp_synapse weight update (additive, mu=0):
+    #   potentiation : Δw = +lambda         (pre before post, Δt > 0)
+    #   depression   : Δw = -alpha * lambda  (post before pre, Δt < 0)
+    # so lambda = A_plus, alpha = A_minus / A_plus
+    K = min(K_ca1_ec, len(ca1_pyr))
+    nest.Connect(
+        ca1_pyr,
+        EC_LII,
+        conn_spec={"rule": "fixed_indegree", "indegree": K},
+        syn_spec={
+            "synapse_model": "stdp_synapse",
+            "weight":    float(w_ca1_ec),
+            "delay":     float(delay_ca1_ec),
+            "tau_plus":  float(tau_plus),
+            "lambda":    float(A_plus),
+            "alpha":     float(A_minus / max(A_plus, 1e-12)),
+            "mu_plus":   0.0,
+            "mu_minus":  0.0,
+            "Wmax":      float(Wmax),
+        },
+    )
+
+    # Store the synapse collection now — GetConnections() is cheap right after
+    # Connect() and gives us the handle needed for STC weight snapshots later.
+    conns_ca1_ec = nest.GetConnections(ca1_pyr, EC_LII)
+
+    # ---- Spike recorder ----------------------------------------------------
+    spk_ec = nest.Create("spike_recorder")
+    nest.Connect(EC_LII, spk_ec)
+
+    n_stdp = N_ec_lii * K
+    print(f"  [ECModule] CA1→EC STDP synapses: {n_stdp:,}  "
+          f"(~{n_stdp*120/1e6:.0f} MB)  "
+          f"done in {time.perf_counter()-t0:.1f}s")
+
+    return ECModule(
+        population   = EC_LII,
+        spike_rec    = spk_ec,
+        conns_ca1_ec = conns_ca1_ec,
+        N            = N_ec_lii,
+        K_ca1_ec     = K,
+        w_init       = w_ca1_ec,
+    )
+
+
+# ============================================================================
 # Replay quality metric
 # ============================================================================
 
@@ -999,7 +1140,7 @@ def plot_bidirectional_replay(net, sim_ms=1000.0, save_prefix="replay"):
 # Console report
 # ============================================================================
 
-def print_report(net, sim_ms, scale_label):
+def print_report(net, sim_ms, scale_label, ec_module=None):
     print(f"\n{'='*72}")
     print(f"SIMULATION REPORT  [{scale_label}]")
     print(f"{'='*72}")
@@ -1037,6 +1178,21 @@ def print_report(net, sim_ms, scale_label):
         n_s = np.sum((t_sup  >= ws) & (t_sup  <= we))
         n_d = np.sum((t_deep >= ws) & (t_deep <= we))
         print(f"  {label}: SUP={n_s:,}  DEEP={n_d:,}  DEEP/SUP ratio={n_d/max(n_s,1):.2f}")
+
+    if ec_module is not None:
+        print("\n--- EC LII/III (cortical target) ---")
+        t_ec, _ = _get_spikes(ec_module.spike_rec)
+        rate_ec  = len(t_ec) / (ec_module.N * sim_ms / 1000.0)
+        print(f"  {'EC LII/III':20s}: N={ec_module.N:8,} | {len(t_ec):10,} spikes | {rate_ec:6.2f} Hz")
+        for label, (ws, we) in [("SWR-1 fwd", net["swr_fwd"]), ("SWR-2 rev", net["swr_rev"])]:
+            n_ec = np.sum((t_ec >= ws) & (t_ec <= we))
+            print(f"  {label}: EC spikes in window = {n_ec:,}")
+        # Quick CA1->EC weight snapshot
+        w_vals = np.array(nest.GetStatus(ec_module.conns_ca1_ec, "weight"))
+        print(f"  CA1->EC weights: mean={w_vals.mean():.4f}  "
+              f"min={w_vals.min():.4f}  max={w_vals.max():.4f}  "
+              f"(init={ec_module.w_init:.4f})")
+
     print(f"{'='*72}")
 
 
@@ -1044,7 +1200,8 @@ def print_report(net, sim_ms, scale_label):
 # HDF5 export  (offline plotting on any machine — no NEST required)
 # ============================================================================
 
-def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
+def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
+                     ec_module=None):
     """
     Save all simulation results to an HDF5 file for offline plotting.
 
@@ -1102,6 +1259,11 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
         # On ranks > 0 it returns empty arrays; those ranks skip file I/O below.
         spk_cache[h5_key] = _gather_spikes(t_local, s_local)
 
+    # Gather EC LII spikes if the module is present
+    if ec_module is not None:
+        t_local, s_local = _get_spikes(ec_module.spike_rec)
+        spk_cache["ec_lii"] = _gather_spikes(t_local, s_local)
+
     # Only rank 0 writes the file — all other ranks are done here.
     if _mpi_rank() != 0:
         return
@@ -1119,6 +1281,11 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
         h5.attrs["swr_fwd_stop"]  = float(net["swr_fwd"][1])
         h5.attrs["swr_rev_start"] = float(net["swr_rev"][0])
         h5.attrs["swr_rev_stop"]  = float(net["swr_rev"][1])
+        h5.attrs["ec_lii_present"] = ec_module is not None
+        if ec_module is not None:
+            h5.attrs["ec_lii_N"]       = ec_module.N
+            h5.attrs["ec_lii_K_ca1"]   = ec_module.K_ca1_ec
+            h5.attrs["ec_lii_w_init"]  = ec_module.w_init
         try:
             import nest as _nest
             h5.attrs["nest_version"] = _nest.__version__
@@ -1140,6 +1307,25 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
             counts, _ = np.histogram(t_spk, bins=edges)
             rate = (counts / (bin_ms / 1e3) / max(n_cells, 1)).astype(np.float32)
             g.create_dataset("rate", data=rate)
+
+        # --- EC LII/III group (optional) -------------------------------------
+        if ec_module is not None:
+            t_spk, s_spk = spk_cache["ec_lii"]
+            g_ec = h5.create_group("ec_lii")
+            g_ec.attrs["n_cells"]   = ec_module.N
+            g_ec.attrs["K_ca1_ec"]  = ec_module.K_ca1_ec
+            g_ec.attrs["w_init"]    = ec_module.w_init
+            g_ec.create_dataset("spk_times",   data=t_spk.astype(np.float32), **compress)
+            g_ec.create_dataset("spk_senders", data=s_spk.astype(np.int32),   **compress)
+            counts, _ = np.histogram(t_spk, bins=edges)
+            rate_ec = (counts / (bin_ms / 1e3) / max(ec_module.N, 1)).astype(np.float32)
+            g_ec.create_dataset("rate", data=rate_ec)
+            # Initial CA1->EC weight snapshot (post-simulation, pre-STC hook)
+            w_vals = np.array(nest.GetStatus(ec_module.conns_ca1_ec, "weight"),
+                              dtype=np.float32)
+            g_ec.create_dataset("w_ca1_ec_final", data=w_vals, **compress)
+            g_ec.attrs["w_ca1_ec_mean"]  = float(w_vals.mean())
+            g_ec.attrs["w_ca1_ec_std"]   = float(w_vals.std())
 
         # --- sequence group membership (CA3 SUP + DEEP) ----------------------
         sup_groups  = net["ca3_sup_groups"]
@@ -1184,6 +1370,10 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
             n_cells   = int(len(net[pop_key]))
             sg.attrs[f"mean_rate_{h5_key}"] = float(len(t_spk) / (n_cells * sim_ms / 1000.0))
 
+        if ec_module is not None:
+            t_ec, _ = spk_cache["ec_lii"]
+            sg.attrs["mean_rate_ec_lii"] = float(len(t_ec) / (ec_module.N * sim_ms / 1000.0))
+
     print(f">>> Saved HDF5: {outpath}")
 
 
@@ -1193,117 +1383,139 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Bidirectional hippocampal replay — Watson et al. 2025 (v2: native NEST rules)",
+        description="Bidirectional hippocampal replay — Watson et al. 2025 (v4: EC LII module)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Scale summary (v2 with native NEST connection rules):
-  1pct    ~7,710 neurons    MacBook M3: ~6-10 min   | MN5 100 CPUs: ~2-3 min
-  12pct  ~93,460 neurons    MacBook M3: ~1-3 h      | MN5 100 CPUs: ~12-25 min
-  100pct ~781,000 neurons   MacBook M3: not feasible | MN5 100 CPUs: ~3-5 h
+--scale N  accepts any integer from 1 to 100 (percent of full rat hippocampus).
 
-MareNostrum5 submission examples:
-  sbatch --nodes=1   --ntasks=4    --cpus-per-task=28 run_replay_mn5.sh   # 1pct
-  sbatch --nodes=16  --ntasks=64   --cpus-per-task=28 run_replay_mn5.sh   # 12pct
-  sbatch --nodes=256 --ntasks=1024 --cpus-per-task=28 run_replay_mn5.sh   # 100pct
+Approximate neuron counts and runtimes on MN5 (single node, 50 OpenMP threads):
+  --scale  1   ~   7,700 neurons   ~2-3 min
+  --scale  5   ~  38,500 neurons   ~8-12 min
+  --scale 12   ~  93,500 neurons   ~25-40 min
+  --scale 25   ~ 195,000 neurons   ~1-2 h
+  --scale 50   ~ 390,000 neurons   ~3-5 h
+  --scale 100  ~ 781,000 neurons   ~8-12 h
+
+n_seq_groups = max(10, round(10 * sqrt(scale))):
+  scale 1→10 groups,  4→20,  9→30,  25→50,  100→100
+
+Cortical module:
+  --ec-lii   adds EC LII/III (Phase 1 consolidation target).
+             CA1→EC projection uses stdp_synapse.  At 10% scale this
+             adds ~10k neurons and ~5M STDP synapses (~0.6 GB RAM).
         """,
     )
     parser.add_argument(
-        "--scale", choices=["1pct", "12pct", "100pct"], default="1pct",
-        help="Network scale (default: 1pct)")
+        "--scale", type=int, default=1, metavar="PCT",
+        help="Network scale as integer percent of full rat hippocampus (1–100, default: 1)")
     parser.add_argument(
         "--sim-ms", type=float, default=1000.0,
         help="Simulation duration in ms (default: 1000)")
     parser.add_argument(
         "--threads", type=int, default=None,
-        help="OpenMP threads per MPI rank (overrides OMP_NUM_THREADS and scale default)")
+        help="OpenMP threads per MPI rank (overrides auto-selected default)")
     parser.add_argument(
         "--no-figures", action="store_true",
-        help="Skip figure generation — recommended for 12pct/100pct on HPC")
+        help="Skip figure generation — recommended for scale>=12 on HPC")
     parser.add_argument(
         "--out-hdf5", type=str, default=None, metavar="FILE",
-        help="Path for the output HDF5 file (e.g. results_1pct/replay_1pct.h5). "
-             "If omitted, a file is written automatically alongside any figures. "
-             "Use this to separate HPC computation from local plotting.")
+        help="Path for the output HDF5 file. "
+             "If omitted, written to replay_output_<N>pct/replay_<N>pct.h5")
+    # ---- Phase 1 cortical flag ----------------------------------------------
+    parser.add_argument(
+        "--ec-lii", action="store_true",
+        help="Add EC LII/III population with STDP synapses from CA1 (Phase 1 consolidation)")
+    parser.add_argument(
+        "--ec-lii-scale", type=int, default=None, metavar="PCT",
+        help="EC LII scale as independent percent of 100k reference neurons. "
+             "Defaults to --scale if omitted, so both structures match.")
     args = parser.parse_args()
 
-    cfg = SCALE_CONFIGS[args.scale]
+    cfg = build_scale_config(args.scale)
 
     n_threads = (args.threads
                  if args.threads is not None
                  else int(os.environ.get("OMP_NUM_THREADS", cfg["n_threads_default"])))
 
-    SIM_MS = args.sim_ms
-    total_N = (cfg["N_ca3_sup"] + cfg["N_ca3_deep"]
-               + cfg["N_ca3_int_sup"] + cfg["N_ca3_int_deep"]
-               + cfg["N_ca1_pyr"] + cfg["N_ca1_basket"] + cfg["N_ca1_olm"])
+    SIM_MS   = args.sim_ms
+    total_N  = sum(cfg[k] for k in _REF_100PCT)
+    n_groups = cfg["n_seq_groups"]
+
+    # EC LII neuron count — independently scalable, defaults to hippocampal scale
+    ec_lii_pct = args.ec_lii_scale if args.ec_lii_scale is not None else args.scale
+    N_ec_lii   = _round_to_multiple(
+        _REF_CORTEX["N_ec_lii"] * ec_lii_pct / 100.0,
+        n_groups,
+    )
 
     print(f"\n{'='*72}")
-    print(f"  Watson et al. 2025 — Bidirectional Replay  [v2: native NEST rules]")
+    print(f"  Watson et al. 2025 — Bidirectional Replay  [v4: EC LII module]")
     print(f"  Scale    : {cfg['label']}")
     print(f"  CA3_SUP  : {cfg['N_ca3_sup']:>10,}  CA3_DEEP : {cfg['N_ca3_deep']:>8,}")
-    print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {cfg['n_seq_groups']:>8,}")
+    print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {n_groups:>8,}  "
+          f"(CA3_SUP/group = {cfg['N_ca3_sup']//n_groups})")
     print(f"  Total N  : {total_N:>10,}")
-    print(f"  Threads  : {n_threads} per MPI rank  |  Sim: {SIM_MS} ms")
-    print(f"  MN5 hint : {cfg['slurm_nodes']} nodes, {cfg['slurm_ntasks']} MPI ranks")
-    print(f"  Connect  : fixed_indegree + pairwise_bernoulli (C++, MPI-parallel)")
+    if args.ec_lii:
+        print(f"  EC LII   : {N_ec_lii:>10,}  ({ec_lii_pct}% of 100k ref)  [--ec-lii]")
+    print(f"  Threads  : {n_threads}  |  Sim: {SIM_MS} ms")
+    print(f"  Connect  : fixed_indegree + pairwise_bernoulli (C++, OpenMP)")
     print(f"{'='*72}\n")
 
     t_wall = time.perf_counter()
 
-    print(">>> Building network...")
+    print(">>> Building hippocampal network...")
     net = build_replay_network(
-        N_ca3_sup     = cfg["N_ca3_sup"],
-        N_ca3_deep    = cfg["N_ca3_deep"],
-        N_ca3_int_sup = cfg["N_ca3_int_sup"],
-        N_ca3_int_deep= cfg["N_ca3_int_deep"],
-        N_ca1_pyr     = cfg["N_ca1_pyr"],
-        N_ca1_basket  = cfg["N_ca1_basket"],
-        N_ca1_olm     = cfg["N_ca1_olm"],
-        n_seq_groups  = cfg["n_seq_groups"],
-        n_threads     = n_threads,
+        N_ca3_sup      = cfg["N_ca3_sup"],
+        N_ca3_deep     = cfg["N_ca3_deep"],
+        N_ca3_int_sup  = cfg["N_ca3_int_sup"],
+        N_ca3_int_deep = cfg["N_ca3_int_deep"],
+        N_ca1_pyr      = cfg["N_ca1_pyr"],
+        N_ca1_basket   = cfg["N_ca1_basket"],
+        N_ca1_olm      = cfg["N_ca1_olm"],
+        n_seq_groups   = cfg["n_seq_groups"],
+        n_threads      = n_threads,
     )
+
+    # ---- Optional Phase 1: EC LII/III ----------------------------------------
+    ec_module = None
+    if args.ec_lii:
+        print(">>> Building EC LII/III module...")
+        ec_module = build_ec_lii(
+            ca1_pyr  = net["PYR"],
+            N_ec_lii = N_ec_lii,
+        )
 
     print(f"\n>>> Simulating {SIM_MS} ms...")
     t_sim = time.perf_counter()
     nest.Simulate(SIM_MS)
     print(f"    Simulation done in {time.perf_counter()-t_sim:.1f}s")
 
-    # -------------------------------------------------------------------------
-    # Post-simulation output: report, HDF5, figures.
-    #
-    # In an MPI run nest.Simulate() is collective (all ranks must call it), but
-    # everything below is output-only.  save_replay_hdf5() gathers spikes
-    # internally and only rank 0 writes the file, so it is safe to call from
-    # every rank.  print_report() and plot_bidirectional_replay() are gated to
-    # rank 0 to avoid N copies of the same console/figure output.
-    # -------------------------------------------------------------------------
     rank = _mpi_rank()
 
-    # ---- HDF5 export (always — gather+write happens inside, safe for all ranks)
-    out_dir = os.path.join(_script_dir, f"replay_output_{args.scale}")
+    # ---- HDF5 export (gather+write on rank 0) --------------------------------
+    scale_tag = f"{args.scale}pct"
+    out_dir   = os.path.join(_script_dir, f"replay_output_{scale_tag}")
     if rank == 0:
         os.makedirs(out_dir, exist_ok=True)
 
     hdf5_path = (args.out_hdf5
                  if args.out_hdf5
-                 else os.path.join(out_dir, f"replay_{args.scale}.h5"))
+                 else os.path.join(out_dir, f"replay_{scale_tag}.h5"))
     if rank == 0:
         os.makedirs(os.path.dirname(os.path.abspath(hdf5_path)), exist_ok=True)
 
     print(f"\n>>> [rank {rank}] Entering HDF5 export (gather + write on rank 0)...")
-    save_replay_hdf5(net, SIM_MS, cfg["label"], hdf5_path)
+    save_replay_hdf5(net, SIM_MS, cfg["label"], hdf5_path, ec_module=ec_module)
 
-    # Everything below is rank-0 only
     if rank != 0:
         print(f">>> [rank {rank}] Done (non-root rank exiting).")
         raise SystemExit(0)
 
-    print_report(net, SIM_MS, cfg["label"])
+    print_report(net, SIM_MS, cfg["label"], ec_module=ec_module)
 
-    # ---- Optional local figure generation -----------------------------------
     if not args.no_figures:
         print("\n>>> Generating figures...")
-        prefix = os.path.join(out_dir, f"bidir_replay_{args.scale}")
+        prefix = os.path.join(out_dir, f"bidir_replay_{scale_tag}")
         paths  = plot_bidirectional_replay(net, sim_ms=SIM_MS, save_prefix=prefix)
         print(f">>> Figures saved to: {out_dir}/")
         for pp in paths:
