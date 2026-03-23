@@ -55,4 +55,5 @@ srun --cpu-bind=cores \
     --sim-ms   "$SIM_MS" \
     --threads  "$SLURM_CPUS_PER_TASK" \
     --out-hdf5 "${OUTDIR}/replay_${SCALE}.h5" \
+    --ec-lii \
     --no-figures
