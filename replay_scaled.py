@@ -900,7 +900,7 @@ class ECModule:
 def build_ec_lii(
     ca1_pyr,
     N_ec_lii      : int,
-    K_ca1_ec      : int   = 500,
+    K_ca1_ec      : int   = 50,
     w_ca1_ec      : float = 1.0,
     delay_ca1_ec  : float = 3.0,    # axonal conduction delay [ms]
     rate_bg       : float = 200.0,  # tonic background Poisson drive [Hz]
@@ -915,16 +915,25 @@ def build_ec_lii(
 
     Neuron model
     ------------
-    Izhikevich with stellate-cell parameters (regular spiking, less adapting
-    than CA3 SUP): a=0.02, b=0.2, c=-65, d=6 (d=8 would be more adapting).
-    Initial membrane potential set at rest (-65 mV).
+    Izhikevich stellate-cell parameters (regular spiking, lightly adapting):
+    a=0.02, b=0.2, c=-65, d=6.  Rest at -65 mV.
 
     CA1 → EC projection
     -------------------
-    Rule         : fixed_indegree  (K per EC neuron, C++-parallel)
+    Rule         : pairwise_bernoulli  p = K / N_ca1
     Synapse model: stdp_synapse (additive, mu_plus=mu_minus=0)
       NEST params: lambda = A_plus,  alpha = A_minus / A_plus
     Delay        : 3 ms (hippocampal-entorhinal axonal conduction)
+
+    WHY pairwise_bernoulli instead of fixed_indegree:
+    In NEST 3.9.0 on MN5, fixed_indegree + stdp_synapse runs at ~281
+    synapses/s (single-threaded slow path), while pairwise_bernoulli uses
+    the parallel C++ connection kernel shared with static synapses and is
+    orders of magnitude faster.  The biological difference is negligible:
+    mean indegree = K with Poisson variance instead of exactly K.
+
+    K_ca1_ec default is 50 (safe for all scales on MN5).  Raise to 200–500
+    only after confirming pairwise_bernoulli is fast on your build.
 
     The SWR replay step (~3.8 ms/group at 10%) is well inside the STDP LTP
     window (tau_plus=20 ms), so forward replay potentiates CA1→EC weights
@@ -937,29 +946,39 @@ def build_ec_lii(
     import nest   # local import keeps module importable without NEST installed
 
     t0 = time.perf_counter()
-    print(f"\n  [ECModule] Building EC LII/III  N={N_ec_lii:,}  "
-          f"K_ca1_ec={K_ca1_ec}  w_init={w_ca1_ec}")
+    N_ca1 = len(ca1_pyr)
+    p_ca1_ec = min(1.0, K_ca1_ec / max(N_ca1, 1))
+    n_stdp_expected = int(N_ec_lii * K_ca1_ec)   # expected value for pairwise
+
+    print(f"\n  [ECModule] Building EC LII/III")
+    print(f"  [ECModule]   N_ec={N_ec_lii:,}  N_ca1={N_ca1:,}  "
+          f"K={K_ca1_ec}  p={p_ca1_ec:.5f}  "
+          f"expected_synapses~{n_stdp_expected:,}")
 
     # ---- Stellate cell parameters (Izhikevich) ----------------------------
     ec_params = dict(a=0.02, b=0.2, c=-65.0, d=6.0,
                      V_m=-65.0, U_m=-13.0, I_e=0.0)
     EC_LII = nest.Create("izhikevich", N_ec_lii, params=ec_params)
 
-    # ---- Tonic background drive (keeps EC cells in realistic firing range) -
+    # ---- Tonic background drive -------------------------------------------
     bg = nest.Create("poisson_generator", N_ec_lii, params={"rate": float(rate_bg)})
     nest.Connect(bg, EC_LII, conn_spec="one_to_one",
                  syn_spec={"weight": float(w_bg), "delay": 1.0})
 
-    # ---- CA1 → EC : fixed_indegree, stdp_synapse --------------------------
+    # ---- CA1 → EC : pairwise_bernoulli, stdp_synapse ----------------------
+    # pairwise_bernoulli uses the same parallel C++ kernel as static synapses,
+    # avoiding the serial slow path that fixed_indegree hits with stdp_synapse
+    # in NEST 3.9.0.
+    #
     # NEST stdp_synapse weight update (additive, mu=0):
     #   potentiation : Δw = +lambda         (pre before post, Δt > 0)
     #   depression   : Δw = -alpha * lambda  (post before pre, Δt < 0)
     # so lambda = A_plus, alpha = A_minus / A_plus
-    K = min(K_ca1_ec, len(ca1_pyr))
+    t_connect = time.perf_counter()
     nest.Connect(
         ca1_pyr,
         EC_LII,
-        conn_spec={"rule": "fixed_indegree", "indegree": K},
+        conn_spec={"rule": "pairwise_bernoulli", "p": p_ca1_ec},
         syn_spec={
             "synapse_model": "stdp_synapse",
             "weight":    float(w_ca1_ec),
@@ -972,26 +991,33 @@ def build_ec_lii(
             "Wmax":      float(Wmax),
         },
     )
+    dt_connect = time.perf_counter() - t_connect
 
-    # Store the synapse collection now — GetConnections() is cheap right after
-    # Connect() and gives us the handle needed for STC weight snapshots later.
+    # Store synapse collection — GetConnections() right after Connect() is fast.
     conns_ca1_ec = nest.GetConnections(ca1_pyr, EC_LII)
+    n_stdp_actual = len(conns_ca1_ec)
+
+    # Report connection rate so we can detect serial slow-path regressions.
+    rate = n_stdp_actual / max(dt_connect, 1e-6)
+    print(f"  [ECModule] CA1→EC STDP: {n_stdp_actual:,} synapses  "
+          f"in {dt_connect:.1f}s  ({rate:,.0f} syn/s)")
+    if rate < 10_000:
+        print(f"  [ECModule] WARNING: connection rate {rate:,.0f} syn/s is very low — "
+              f"stdp_synapse may be using a serial fallback path on this NEST build. "
+              f"Consider reducing --ec-lii-k further.")
 
     # ---- Spike recorder ----------------------------------------------------
     spk_ec = nest.Create("spike_recorder")
     nest.Connect(EC_LII, spk_ec)
 
-    n_stdp = N_ec_lii * K
-    print(f"  [ECModule] CA1→EC STDP synapses: {n_stdp:,}  "
-          f"(~{n_stdp*120/1e6:.0f} MB)  "
-          f"done in {time.perf_counter()-t0:.1f}s")
+    print(f"  [ECModule] Total EC build time: {time.perf_counter()-t0:.1f}s")
 
     return ECModule(
         population   = EC_LII,
         spike_rec    = spk_ec,
         conns_ca1_ec = conns_ca1_ec,
         N            = N_ec_lii,
-        K_ca1_ec     = K,
+        K_ca1_ec     = K_ca1_ec,
         w_init       = w_ca1_ec,
     )
 
@@ -1429,6 +1455,12 @@ Cortical module:
         "--ec-lii-scale", type=int, default=None, metavar="PCT",
         help="EC LII scale as independent percent of 100k reference neurons. "
              "Defaults to --scale if omitted, so both structures match.")
+    parser.add_argument(
+        "--ec-lii-k", type=int, default=50, metavar="K",
+        help="Target in-degree K for the CA1→EC STDP projection (default: 50). "
+             "pairwise_bernoulli is used with p=K/N_ca1. "
+             "Keep ≤100 until you confirm pairwise_bernoulli is fast on your build; "
+             "K=500 with fixed_indegree was ~300k× slower on MN5 NEST 3.9.0.")
     args = parser.parse_args()
 
     cfg = build_scale_config(args.scale)
@@ -1456,7 +1488,8 @@ Cortical module:
           f"(CA3_SUP/group = {cfg['N_ca3_sup']//n_groups})")
     print(f"  Total N  : {total_N:>10,}")
     if args.ec_lii:
-        print(f"  EC LII   : {N_ec_lii:>10,}  ({ec_lii_pct}% of 100k ref)  [--ec-lii]")
+        print(f"  EC LII   : {N_ec_lii:>10,}  ({ec_lii_pct}% of 100k ref)  "
+              f"K={args.ec_lii_k}  [--ec-lii]")
     print(f"  Threads  : {n_threads}  |  Sim: {SIM_MS} ms")
     print(f"  Connect  : fixed_indegree + pairwise_bernoulli (C++, OpenMP)")
     print(f"{'='*72}\n")
@@ -1483,6 +1516,7 @@ Cortical module:
         ec_module = build_ec_lii(
             ca1_pyr  = net["PYR"],
             N_ec_lii = N_ec_lii,
+            K_ca1_ec = args.ec_lii_k,
         )
 
     print(f"\n>>> Simulating {SIM_MS} ms...")
