@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=50
-#SBATCH --time=04:00:00      # 2h is plenty for 12% + EC LII K=50; increase for larger K
+#SBATCH --time=04:00:00      # 4h: hippocampal build ~4min + EC build <1s + simulate ~30min
 #SBATCH --partition=gp_bsccs
 
 # Scale and EC options

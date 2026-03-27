@@ -878,26 +878,35 @@ class ECModule:
     Kept as a self-contained dataclass so it can be built optionally (via
     --ec-lii) without touching any existing hippocampal code.
 
-    CA1→EC synapses use static_synapse (fast parallel connect on all NEST
-    builds).  STDP weight updates are applied by the Python STC hook between
-    SWR events via nest.GetStatus / nest.SetStatus — this is both faster and
-    gives full control over the tag/PRP logic.
+    CA1→EC synapses use static_synapse (fast parallel connect on NEST 3.9.0).
+    STDP weight updates are applied by the Python STC hook between SWR events
+    via GetConnections(pre_nc, population) + GetStatus/SetStatus (Phase 2).
+
+    Why GetConnections is NOT called at build time
+    -----------------------------------------------
+    nest.GetConnections(source, target) scans ALL synapses in the kernel to
+    find matching source/target pairs.  With 226M hippocampal synapses already
+    in the kernel, that scan runs at ~32k syn/s and takes ~2 hours.  Instead,
+    we store the pre/post NodeCollections and call GetConnections only when the
+    STC hook actually needs weights — at which point we will use
+    GetConnections(target=EC_LII) which scans only EC neurons' incoming slots
+    (~600k synapses) rather than all 226M.
 
     Attributes
     ----------
-    population    NEST NodeCollection   — EC LII/III stellate cells
-    spike_rec     NEST NodeCollection   — spike recorder
-    conns_ca1_ec  NEST SynapseCollection — CA1→EC static synapses (STC hook)
-    N             neuron count
-    K_ca1_ec      mean in-degree of the CA1→EC projection
-    w_init        initial synaptic weight (all synapses start here)
+    population  NEST NodeCollection  — EC LII/III stellate cells
+    spike_rec   NEST NodeCollection  — spike recorder
+    pre_nc      NEST NodeCollection  — CA1 PYR source population (for STC hook)
+    N           neuron count
+    K_ca1_ec    in-degree of the CA1→EC projection
+    w_init      initial synaptic weight
     """
-    population   : object   # nest.NodeCollection
-    spike_rec    : object   # nest.NodeCollection  (spike_recorder)
-    conns_ca1_ec : object   # nest.SynapseCollection
-    N            : int
-    K_ca1_ec     : int
-    w_init       : float
+    population : object   # nest.NodeCollection  — EC LII/III
+    spike_rec  : object   # nest.NodeCollection  — spike_recorder
+    pre_nc     : object   # nest.NodeCollection  — CA1 PYR (STC hook source)
+    N          : int
+    K_ca1_ec   : int
+    w_init     : float
 
 
 def build_ec_lii(
@@ -984,10 +993,12 @@ def build_ec_lii(
     )
     dt_conn = time.perf_counter() - t_conn
 
-    # Store synapse handle immediately — cheap right after Connect().
-    conns_ca1_ec  = nest.GetConnections(ca1_pyr, EC_LII)
-    n_actual      = len(conns_ca1_ec)
-    rate          = n_actual / max(dt_conn, 1e-6)
+    # Do NOT call GetConnections here — it scans all 226M synapses in the
+    # kernel at ~32k syn/s (2+ hours).  Phase 2 STC hook will use
+    # GetConnections(target=EC_LII) which only scans EC neurons' ~600k
+    # incoming slots.  Store NodeCollections for that deferred call.
+    n_actual = int(N_ec_lii * K)   # exact for fixed_indegree
+    rate     = n_actual / max(dt_conn, 1e-6)
 
     print(f"  [ECModule] CA1→EC static: {n_actual:,} synapses  "
           f"in {dt_conn:.2f}s  ({rate:,.0f} syn/s)")
@@ -1002,12 +1013,12 @@ def build_ec_lii(
     print(f"  [ECModule] Total EC build: {time.perf_counter()-t0:.1f}s")
 
     return ECModule(
-        population   = EC_LII,
-        spike_rec    = spk_ec,
-        conns_ca1_ec = conns_ca1_ec,
-        N            = N_ec_lii,
-        K_ca1_ec     = K,
-        w_init       = w_ca1_ec,
+        population = EC_LII,
+        spike_rec  = spk_ec,
+        pre_nc     = ca1_pyr,
+        N          = N_ec_lii,
+        K_ca1_ec   = K,
+        w_init     = w_ca1_ec,
     )
 
 
@@ -1203,10 +1214,9 @@ def print_report(net, sim_ms, scale_label, ec_module=None):
             n_ec = np.sum((t_ec >= ws) & (t_ec <= we))
             print(f"  {label}: EC spikes in window = {n_ec:,}")
         # Quick CA1->EC weight snapshot
-        w_vals = np.array(nest.GetStatus(ec_module.conns_ca1_ec, "weight"))
-        print(f"  CA1->EC weights: mean={w_vals.mean():.4f}  "
-              f"min={w_vals.min():.4f}  max={w_vals.max():.4f}  "
-              f"(init={ec_module.w_init:.4f})")
+        # Weight snapshot deferred to Phase 2 STC hook (GetConnections is
+        # too slow to call here with 226M hippocampal synapses in kernel).
+        print(f"  CA1->EC weights  : deferred — use STC hook (Phase 2)")
 
     print(f"{'='*72}")
 
@@ -1335,12 +1345,10 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             counts, _ = np.histogram(t_spk, bins=edges)
             rate_ec = (counts / (bin_ms / 1e3) / max(ec_module.N, 1)).astype(np.float32)
             g_ec.create_dataset("rate", data=rate_ec)
-            # Initial CA1->EC weight snapshot (post-simulation, pre-STC hook)
-            w_vals = np.array(nest.GetStatus(ec_module.conns_ca1_ec, "weight"),
-                              dtype=np.float32)
-            g_ec.create_dataset("w_ca1_ec_final", data=w_vals, **compress)
-            g_ec.attrs["w_ca1_ec_mean"]  = float(w_vals.mean())
-            g_ec.attrs["w_ca1_ec_std"]   = float(w_vals.std())
+            # Weight snapshot skipped for Phase 1 — GetConnections(pre, EC)
+            # would scan 226M synapses.  Phase 2 STC hook reads weights via
+            # GetConnections(target=EC_LII) which only touches EC's 600k slots.
+            g_ec.attrs["w_ca1_ec_note"] = "deferred to Phase 2 STC hook"
 
         # --- sequence group membership (CA3 SUP + DEEP) ----------------------
         sup_groups  = net["ca3_sup_groups"]
