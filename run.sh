@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=50
-#SBATCH --time=02:00:00      # 2h is plenty for 12% + EC LII K=50; increase for larger K
+#SBATCH --time=04:00:00      # 2h is plenty for 12% + EC LII K=50; increase for larger K
 #SBATCH --partition=gp_bsccs
 
 # Scale and EC options
