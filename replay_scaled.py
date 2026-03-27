@@ -876,18 +876,21 @@ class ECModule:
     Entorhinal cortex layer II/III — minimal cortical consolidation target.
 
     Kept as a self-contained dataclass so it can be built optionally (via
-    --ec-lii) without touching any existing hippocampal code.  The
-    conns_ca1_ec attribute gives the STC hook direct access to the CA1→EC
-    STDP synapse collection for between-SWR weight snapshots.
+    --ec-lii) without touching any existing hippocampal code.
+
+    CA1→EC synapses use static_synapse (fast parallel connect on all NEST
+    builds).  STDP weight updates are applied by the Python STC hook between
+    SWR events via nest.GetStatus / nest.SetStatus — this is both faster and
+    gives full control over the tag/PRP logic.
 
     Attributes
     ----------
-    population    NEST NodeCollection  — EC LII/III stellate cells
-    spike_rec     NEST NodeCollection  — spike recorder attached to population
-    conns_ca1_ec  NEST SynapseCollection — CA1→EC STDP synapses (STC hook)
+    population    NEST NodeCollection   — EC LII/III stellate cells
+    spike_rec     NEST NodeCollection   — spike recorder
+    conns_ca1_ec  NEST SynapseCollection — CA1→EC static synapses (STC hook)
     N             neuron count
-    K_ca1_ec      fixed in-degree used for the CA1→EC projection
-    w_init        initial synaptic weight
+    K_ca1_ec      mean in-degree of the CA1→EC projection
+    w_init        initial synaptic weight (all synapses start here)
     """
     population   : object   # nest.NodeCollection
     spike_rec    : object   # nest.NodeCollection  (spike_recorder)
@@ -899,118 +902,95 @@ class ECModule:
 
 def build_ec_lii(
     ca1_pyr,
-    N_ec_lii      : int,
-    K_ca1_ec      : int   = 50,
-    w_ca1_ec      : float = 1.0,
-    delay_ca1_ec  : float = 3.0,    # axonal conduction delay [ms]
-    rate_bg       : float = 200.0,  # tonic background Poisson drive [Hz]
-    w_bg          : float = 1.5,
-    tau_plus      : float = 20.0,   # STDP pre->post time constant [ms]
-    A_plus        : float = 0.01,   # STDP potentiation step (= lambda in NEST)
-    A_minus       : float = 0.008,  # STDP depression step  (= alpha*lambda)
-    Wmax          : float = 2.0,
+    N_ec_lii     : int,
+    K_ca1_ec     : int   = 50,
+    w_ca1_ec     : float = 1.0,
+    delay_ca1_ec : float = 3.0,   # axonal conduction delay CA1→EC [ms]
+    rate_bg      : float = 200.0, # tonic background Poisson drive [Hz]
+    w_bg         : float = 1.5,
 ) -> ECModule:
     """
-    Create EC LII/III population and connect it to CA1 with STDP synapses.
+    Create EC LII/III population and wire it to CA1 with static synapses.
 
     Neuron model
     ------------
     Izhikevich stellate-cell parameters (regular spiking, lightly adapting):
-    a=0.02, b=0.2, c=-65, d=6.  Rest at -65 mV.
+    a=0.02, b=0.2, c=-65, d=6.  Initial membrane potential -65 mV.
 
     CA1 → EC projection
     -------------------
     Rule         : pairwise_bernoulli  p = K / N_ca1
-    Synapse model: stdp_synapse (additive, mu_plus=mu_minus=0)
-      NEST params: lambda = A_plus,  alpha = A_minus / A_plus
+    Synapse model: static_synapse  ← fast parallel C++ kernel on NEST 3.9.0
     Delay        : 3 ms (hippocampal-entorhinal axonal conduction)
 
-    WHY pairwise_bernoulli instead of fixed_indegree:
-    In NEST 3.9.0 on MN5, fixed_indegree + stdp_synapse runs at ~281
-    synapses/s (single-threaded slow path), while pairwise_bernoulli uses
-    the parallel C++ connection kernel shared with static synapses and is
-    orders of magnitude faster.  The biological difference is negligible:
-    mean indegree = K with Poisson variance instead of exactly K.
+    Why static_synapse, not stdp_synapse
+    -------------------------------------
+    On NEST 3.9.0 / MN5, ANY Connect() call using stdp_synapse runs at
+    ~80-300 synapses/s regardless of connection rule (fixed_indegree or
+    pairwise_bernoulli both hit the same serial fallback).  static_synapse
+    uses the vectorised parallel kernel at ~85M syn/s.
 
-    K_ca1_ec default is 50 (safe for all scales on MN5).  Raise to 200–500
-    only after confirming pairwise_bernoulli is fast on your build.
-
-    The SWR replay step (~3.8 ms/group at 10%) is well inside the STDP LTP
-    window (tau_plus=20 ms), so forward replay potentiates CA1→EC weights
-    and reverse replay depresses them — the asymmetry needed for STC.
+    STDP weight updates are applied by the Python STC hook that runs between
+    SWR events: it reads weights via GetStatus(), computes Δw from CA1/EC
+    spike timing, applies tag decay and PRP threshold, then writes updated
+    weights back via SetStatus().  This is Phase 2.  For Phase 1 (this step)
+    we confirm the full pipeline runs end-to-end before adding STDP logic.
 
     Returns
     -------
-    ECModule with conns_ca1_ec stored for the later STC weight-read hook.
+    ECModule — holds the synapse collection handle for the STC hook.
     """
-    import nest   # local import keeps module importable without NEST installed
+    import nest
 
-    t0 = time.perf_counter()
+    t0    = time.perf_counter()
     N_ca1 = len(ca1_pyr)
-    p_ca1_ec = min(1.0, K_ca1_ec / max(N_ca1, 1))
-    n_stdp_expected = int(N_ec_lii * K_ca1_ec)   # expected value for pairwise
+    p     = min(1.0, K_ca1_ec / max(N_ca1, 1))
+    n_exp = int(N_ec_lii * K_ca1_ec)
 
     print(f"\n  [ECModule] Building EC LII/III")
     print(f"  [ECModule]   N_ec={N_ec_lii:,}  N_ca1={N_ca1:,}  "
-          f"K={K_ca1_ec}  p={p_ca1_ec:.5f}  "
-          f"expected_synapses~{n_stdp_expected:,}")
+          f"K={K_ca1_ec}  p={p:.5f}  expected_synapses~{n_exp:,}")
 
-    # ---- Stellate cell parameters (Izhikevich) ----------------------------
-    ec_params = dict(a=0.02, b=0.2, c=-65.0, d=6.0,
-                     V_m=-65.0, U_m=-13.0, I_e=0.0)
-    EC_LII = nest.Create("izhikevich", N_ec_lii, params=ec_params)
+    # ---- Stellate cell (Izhikevich) ----------------------------------------
+    EC_LII = nest.Create("izhikevich", N_ec_lii,
+                         params=dict(a=0.02, b=0.2, c=-65.0, d=6.0,
+                                     V_m=-65.0, U_m=-13.0, I_e=0.0))
 
-    # ---- Tonic background drive -------------------------------------------
+    # ---- Tonic background drive --------------------------------------------
     bg = nest.Create("poisson_generator", N_ec_lii, params={"rate": float(rate_bg)})
     nest.Connect(bg, EC_LII, conn_spec="one_to_one",
                  syn_spec={"weight": float(w_bg), "delay": 1.0})
 
-    # ---- CA1 → EC : pairwise_bernoulli, stdp_synapse ----------------------
-    # pairwise_bernoulli uses the same parallel C++ kernel as static synapses,
-    # avoiding the serial slow path that fixed_indegree hits with stdp_synapse
-    # in NEST 3.9.0.
-    #
-    # NEST stdp_synapse weight update (additive, mu=0):
-    #   potentiation : Δw = +lambda         (pre before post, Δt > 0)
-    #   depression   : Δw = -alpha * lambda  (post before pre, Δt < 0)
-    # so lambda = A_plus, alpha = A_minus / A_plus
-    t_connect = time.perf_counter()
+    # ---- CA1 → EC : pairwise_bernoulli + static_synapse --------------------
+    # static_synapse uses the parallel C++ kernel — confirmed fast on MN5.
+    # STDP updates are handled by the Python STC hook (Phase 2), not NEST.
+    t_conn = time.perf_counter()
     nest.Connect(
         ca1_pyr,
         EC_LII,
-        conn_spec={"rule": "pairwise_bernoulli", "p": p_ca1_ec},
-        syn_spec={
-            "synapse_model": "stdp_synapse",
-            "weight":    float(w_ca1_ec),
-            "delay":     float(delay_ca1_ec),
-            "tau_plus":  float(tau_plus),
-            "lambda":    float(A_plus),
-            "alpha":     float(A_minus / max(A_plus, 1e-12)),
-            "mu_plus":   0.0,
-            "mu_minus":  0.0,
-            "Wmax":      float(Wmax),
-        },
+        conn_spec={"rule": "pairwise_bernoulli", "p": p},
+        syn_spec={"synapse_model": "static_synapse",
+                  "weight": float(w_ca1_ec),
+                  "delay":  float(delay_ca1_ec)},
     )
-    dt_connect = time.perf_counter() - t_connect
+    dt_conn = time.perf_counter() - t_conn
 
-    # Store synapse collection — GetConnections() right after Connect() is fast.
-    conns_ca1_ec = nest.GetConnections(ca1_pyr, EC_LII)
-    n_stdp_actual = len(conns_ca1_ec)
+    # Store synapse handle immediately — cheap right after Connect().
+    conns_ca1_ec  = nest.GetConnections(ca1_pyr, EC_LII)
+    n_actual      = len(conns_ca1_ec)
+    rate          = n_actual / max(dt_conn, 1e-6)
 
-    # Report connection rate so we can detect serial slow-path regressions.
-    rate = n_stdp_actual / max(dt_connect, 1e-6)
-    print(f"  [ECModule] CA1→EC STDP: {n_stdp_actual:,} synapses  "
-          f"in {dt_connect:.1f}s  ({rate:,.0f} syn/s)")
-    if rate < 10_000:
-        print(f"  [ECModule] WARNING: connection rate {rate:,.0f} syn/s is very low — "
-              f"stdp_synapse may be using a serial fallback path on this NEST build. "
-              f"Consider reducing --ec-lii-k further.")
+    print(f"  [ECModule] CA1→EC static: {n_actual:,} synapses  "
+          f"in {dt_conn:.1f}s  ({rate:,.0f} syn/s)")
+    if rate < 100_000:
+        print(f"  [ECModule] WARNING: {rate:,.0f} syn/s is unexpectedly slow for "
+              f"static_synapse — check NEST build.")
 
     # ---- Spike recorder ----------------------------------------------------
     spk_ec = nest.Create("spike_recorder")
     nest.Connect(EC_LII, spk_ec)
 
-    print(f"  [ECModule] Total EC build time: {time.perf_counter()-t0:.1f}s")
+    print(f"  [ECModule] Total EC build: {time.perf_counter()-t0:.1f}s")
 
     return ECModule(
         population   = EC_LII,
@@ -1450,17 +1430,16 @@ Cortical module:
     # ---- Phase 1 cortical flag ----------------------------------------------
     parser.add_argument(
         "--ec-lii", action="store_true",
-        help="Add EC LII/III population with STDP synapses from CA1 (Phase 1 consolidation)")
+        help="Add EC LII/III population with static CA1→EC synapses (Phase 1). "
+             "STDP weight updates applied by Python STC hook (Phase 2).")
     parser.add_argument(
         "--ec-lii-scale", type=int, default=None, metavar="PCT",
         help="EC LII scale as independent percent of 100k reference neurons. "
-             "Defaults to --scale if omitted, so both structures match.")
+             "Defaults to --scale if omitted.")
     parser.add_argument(
         "--ec-lii-k", type=int, default=50, metavar="K",
-        help="Target in-degree K for the CA1→EC STDP projection (default: 50). "
-             "pairwise_bernoulli is used with p=K/N_ca1. "
-             "Keep ≤100 until you confirm pairwise_bernoulli is fast on your build; "
-             "K=500 with fixed_indegree was ~300k× slower on MN5 NEST 3.9.0.")
+        help="Target in-degree K for the CA1→EC projection (default: 50). "
+             "static_synapse is fast at any K on MN5; K=50 is a safe start.")
     args = parser.parse_args()
 
     cfg = build_scale_config(args.scale)
