@@ -926,15 +926,23 @@ def build_ec_lii(
     Why static_synapse, not stdp_synapse
     -------------------------------------
     On NEST 3.9.0 / MN5, ANY Connect() call using stdp_synapse runs at
-    ~80-300 synapses/s regardless of connection rule (fixed_indegree or
-    pairwise_bernoulli both hit the same serial fallback).  static_synapse
-    uses the vectorised parallel kernel at ~85M syn/s.
+    ~80-300 synapses/s regardless of connection rule.  static_synapse
+    uses the vectorised parallel kernel.  STDP weight updates are applied
+    by the Python STC hook between SWR events (Phase 2).
 
-    STDP weight updates are applied by the Python STC hook that runs between
-    SWR events: it reads weights via GetStatus(), computes Δw from CA1/EC
-    spike timing, applies tag decay and PRP threshold, then writes updated
-    weights back via SetStatus().  This is Phase 2.  For Phase 1 (this step)
-    we confirm the full pipeline runs end-to-end before adding STDP logic.
+    Why fixed_indegree, not pairwise_bernoulli
+    -------------------------------------------
+    Three combinations were tested on MN5 before finding what works:
+
+      fixed_indegree  + stdp_synapse   → ~300 syn/s  (stdp serial path)
+      pairwise_bern.  + stdp_synapse   → ~86  syn/s  (both problems)
+      pairwise_bern.  + static_synapse → hangs ~2h   (O(N_pre×N_post) pair
+                                          iteration: 55k×12k = 662M checks)
+      fixed_indegree  + static_synapse → <0.1s        ← this one
+
+    fixed_indegree samples K sources per post neuron — O(K × N_post) — and
+    never iterates the full pre×post matrix, matching the Schaffer collateral
+    pattern that completes 165M synapses in 3s.
 
     Returns
     -------
@@ -944,12 +952,12 @@ def build_ec_lii(
 
     t0    = time.perf_counter()
     N_ca1 = len(ca1_pyr)
-    p     = min(1.0, K_ca1_ec / max(N_ca1, 1))
-    n_exp = int(N_ec_lii * K_ca1_ec)
+    K     = min(K_ca1_ec, N_ca1)          # clamp to pre-population size
+    n_exp = int(N_ec_lii * K)
 
     print(f"\n  [ECModule] Building EC LII/III")
     print(f"  [ECModule]   N_ec={N_ec_lii:,}  N_ca1={N_ca1:,}  "
-          f"K={K_ca1_ec}  p={p:.5f}  expected_synapses~{n_exp:,}")
+          f"K={K}  expected_synapses={n_exp:,}")
 
     # ---- Stellate cell (Izhikevich) ----------------------------------------
     EC_LII = nest.Create("izhikevich", N_ec_lii,
@@ -961,14 +969,15 @@ def build_ec_lii(
     nest.Connect(bg, EC_LII, conn_spec="one_to_one",
                  syn_spec={"weight": float(w_bg), "delay": 1.0})
 
-    # ---- CA1 → EC : pairwise_bernoulli + static_synapse --------------------
-    # static_synapse uses the parallel C++ kernel — confirmed fast on MN5.
-    # STDP updates are handled by the Python STC hook (Phase 2), not NEST.
+    # ---- CA1 → EC : fixed_indegree + static_synapse ------------------------
+    # Each EC neuron receives exactly K inputs drawn randomly from CA1.
+    # O(K × N_post) — same algorithm as Schaffer collaterals, confirmed fast.
+    # STDP updates applied by Python STC hook (Phase 2).
     t_conn = time.perf_counter()
     nest.Connect(
         ca1_pyr,
         EC_LII,
-        conn_spec={"rule": "pairwise_bernoulli", "p": p},
+        conn_spec={"rule": "fixed_indegree", "indegree": K},
         syn_spec={"synapse_model": "static_synapse",
                   "weight": float(w_ca1_ec),
                   "delay":  float(delay_ca1_ec)},
@@ -981,10 +990,10 @@ def build_ec_lii(
     rate          = n_actual / max(dt_conn, 1e-6)
 
     print(f"  [ECModule] CA1→EC static: {n_actual:,} synapses  "
-          f"in {dt_conn:.1f}s  ({rate:,.0f} syn/s)")
-    if rate < 100_000:
-        print(f"  [ECModule] WARNING: {rate:,.0f} syn/s is unexpectedly slow for "
-              f"static_synapse — check NEST build.")
+          f"in {dt_conn:.2f}s  ({rate:,.0f} syn/s)")
+    if rate < 1_000_000:
+        print(f"  [ECModule] WARNING: {rate:,.0f} syn/s — expected >1M syn/s for "
+              f"fixed_indegree + static_synapse on this build.")
 
     # ---- Spike recorder ----------------------------------------------------
     spk_ec = nest.Create("spike_recorder")
@@ -997,7 +1006,7 @@ def build_ec_lii(
         spike_rec    = spk_ec,
         conns_ca1_ec = conns_ca1_ec,
         N            = N_ec_lii,
-        K_ca1_ec     = K_ca1_ec,
+        K_ca1_ec     = K,
         w_init       = w_ca1_ec,
     )
 
