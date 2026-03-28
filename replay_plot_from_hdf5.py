@@ -133,6 +133,20 @@ def main():
         t_bsk,  s_bsk,  n_bsk  = _spk("ca1_basket")
         _,      _,      n_olm  = _spk("ca1_olm")
 
+        # EC LII/III — optional (present only when --ec-lii was used)
+        ec_present = "ec_lii" in h5
+        if ec_present:
+            t_ec, s_ec, n_ec = _spk("ec_lii")
+            ec_attrs = dict(h5["ec_lii"].attrs)
+            print(f"  EC LII/III: N={n_ec:,}  K_ca1={ec_attrs.get('K_ca1_ec','?')}  "
+                  f"w_init={ec_attrs.get('w_init','?')}")
+            if "w_ca1_ec_note" in ec_attrs:
+                print(f"  EC weights: {ec_attrs['w_ca1_ec_note']}")
+        else:
+            t_ec = s_ec = None
+            n_ec = 0
+            print("  EC LII/III: not present in this HDF5")
+
         # Group membership arrays  [n_groups × group_size]
         group_ids_sup  = np.array(h5["ca3_sup"]["group_ids"],  dtype=np.int64)
         group_ids_deep = np.array(h5["ca3_deep"]["group_ids"], dtype=np.int64)
@@ -164,9 +178,10 @@ def main():
     t_pyr_r,  s_pyr_r  = _subsample(t_pyr,  s_pyr,  max_spk)
 
     # ------------------------------------------------------------------
-    # Fig 1 — Overview  (5-panel)
+    # Fig 1 — Overview  (5 or 6 panels depending on EC presence)
     # ------------------------------------------------------------------
-    fig, axes = plt.subplots(5, 1, figsize=(14, 14), sharex=True)
+    n_panels = 6 if ec_present else 5
+    fig, axes = plt.subplots(n_panels, 1, figsize=(14, 14 + 2*(n_panels-5)), sharex=True)
     fig.suptitle(f"Bidirectional Replay — Watson et al. 2025  [{scale}]",
                  fontsize=13, fontweight="bold")
 
@@ -232,6 +247,27 @@ def main():
     ax.set_ylabel("Rate (Hz)", fontsize=9)
     ax.set_title(f"E  Inhibitory rates  [{ibin_ms:.0f} ms bins]", fontsize=9, loc="left")
 
+    # Panel F: EC LII/III raster + rate (only when present)
+    if ec_present:
+        ax = axes[5]
+        t_ec_r, s_ec_r = _subsample(t_ec, s_ec, max_spk)
+        ax.scatter(t_ec_r, s_ec_r, s=0.6, color="coral", rasterized=True, alpha=0.6)
+        _shade(ax, swr_fwd, swr_rev)
+        ax.set_ylabel("EC LII/III neuron ID", fontsize=9)
+        ax.set_title("F  EC LII/III raster  [cortical consolidation target]",
+                     fontsize=9, loc="left")
+        # Overlay EC rate as twin axis
+        ax2 = ax.twinx()
+        _, r_ec = _binned_rate(t_ec, n_ec, sim_ms, bin_ms)
+        tc_ec   = np.arange(0.0, sim_ms, bin_ms) + bin_ms / 2.0
+        ax2.plot(tc_ec[:len(r_ec)], r_ec, color="darkred", lw=1.0, alpha=0.7,
+                 label=f"EC rate ({n_ec:,} neurons)")
+        ax2.set_ylabel("Rate (Hz)", fontsize=8, color="darkred")
+        ax2.tick_params(axis="y", labelcolor="darkred", labelsize=7)
+        ax2.legend(fontsize=7, loc="upper right")
+
+    ax.set_xlabel("Time (ms)", fontsize=9)
+
     fig.tight_layout()
     _maybe_save(fig, f"{args.save_prefix}_fig1_overview.png" if args.save_prefix else None)
 
@@ -286,19 +322,76 @@ def main():
                    "CA1 PYR", "CA1 Basket"]
     pop_spk_t   = [t_sup, t_deep, t_ints, t_intd, t_pyr, t_bsk]
     pop_n_cells = [n_sup, n_deep, n_ints, n_intd, n_pyr, n_bsk]
+    bar_colors  = ["darkorange", "royalblue", "firebrick", "salmon",
+                   "steelblue", "mediumorchid"]
+    if ec_present:
+        pop_labels.append("EC LII/III")
+        pop_spk_t.append(t_ec)
+        pop_n_cells.append(n_ec)
+        bar_colors.append("coral")
     mean_rates  = [len(t) / (n * sim_ms / 1e3) if n > 0 else 0
                    for t, n in zip(pop_spk_t, pop_n_cells)]
 
-    fig4, ax4 = plt.subplots(figsize=(9, 4))
-    bars = ax4.bar(pop_labels, mean_rates,
-                   color=["darkorange", "royalblue", "firebrick", "salmon",
-                          "steelblue", "mediumorchid"])
+    fig4, ax4 = plt.subplots(figsize=(10, 4))
+    bars = ax4.bar(pop_labels, mean_rates, color=bar_colors)
     ax4.bar_label(bars, fmt="%.1f Hz", padding=3, fontsize=8)
     ax4.set_ylabel("Mean firing rate (Hz)", fontsize=10)
     ax4.set_title(f"Population mean firing rates  [{scale}]", fontsize=11)
     ax4.set_ylim(0, max(mean_rates) * 1.25)
     fig4.tight_layout()
     _maybe_save(fig4, f"{args.save_prefix}_fig4_rates_bar.png" if args.save_prefix else None)
+
+    # ------------------------------------------------------------------
+    # Fig 5 — EC LII/III analysis (only when EC present)
+    # ------------------------------------------------------------------
+    if ec_present:
+        pad = 50.0
+        fig5, axes5 = plt.subplots(3, 1, figsize=(14, 10), sharex=False)
+        fig5.suptitle(f"EC LII/III — Cortical Consolidation Target  [{scale}]",
+                      fontsize=12, fontweight="bold")
+
+        # Panel A: full EC raster
+        ax = axes5[0]
+        t_ec_r2, s_ec_r2 = _subsample(t_ec, s_ec, max_spk)
+        ax.scatter(t_ec_r2, s_ec_r2, s=0.5, color="coral", rasterized=True, alpha=0.5)
+        _shade(ax, swr_fwd, swr_rev)
+        ax.set_xlim(0, sim_ms)
+        ax.set_ylabel("EC LII/III neuron ID", fontsize=9)
+        ax.set_title("A  Full EC LII/III raster", fontsize=9, loc="left")
+
+        # Panel B: EC population rate with SWR windows marked
+        ax = axes5[1]
+        tc_ec, rc_ec = _binned_rate(t_ec, n_ec, sim_ms, bin_ms)
+        ax.plot(tc_ec, rc_ec, color="coral", lw=1.2, label="EC LII/III")
+        _, rc_ca1 = _binned_rate(t_pyr, n_pyr, sim_ms, bin_ms)
+        ax.plot(tc_ec[:len(rc_ca1)], rc_ca1, color="steelblue", lw=0.8,
+                alpha=0.6, label="CA1 PYR")
+        _shade(ax, swr_fwd, swr_rev)
+        ax.legend(fontsize=8)
+        ax.set_xlim(0, sim_ms)
+        ax.set_ylabel("Rate (Hz)", fontsize=9)
+        ax.set_title(f"B  EC vs CA1 population rates  [{bin_ms:.0f} ms bins]",
+                     fontsize=9, loc="left")
+
+        # Panel C: zoom on SWR-1 fwd window — EC vs CA1 overlap
+        ax = axes5[2]
+        t0z, t1z = swr_fwd[0] - pad, swr_fwd[1] + pad
+        m_ec  = (t_ec  >= t0z) & (t_ec  <= t1z)
+        m_ca1 = (t_pyr >= t0z) & (t_pyr <= t1z)
+        ax.scatter(t_ec[m_ec],   s_ec[m_ec],   s=2.0, color="coral",
+                   alpha=0.5, label=f"EC ({m_ec.sum():,} spikes)", rasterized=True)
+        ax.scatter(t_pyr[m_ca1], s_pyr[m_ca1], s=0.8, color="steelblue",
+                   alpha=0.3, label=f"CA1 PYR ({m_ca1.sum():,} spikes)", rasterized=True)
+        ax.axvspan(*swr_fwd, color="steelblue", alpha=0.15, label="SWR-1 window")
+        ax.set_xlim(t0z, t1z)
+        ax.legend(fontsize=7, ncol=3)
+        ax.set_xlabel("Time (ms)", fontsize=9)
+        ax.set_ylabel("Neuron ID", fontsize=9)
+        ax.set_title("C  Zoom: SWR-1 forward window — EC response vs CA1 drive",
+                     fontsize=9, loc="left")
+
+        fig5.tight_layout()
+        _maybe_save(fig5, f"{args.save_prefix}_fig5_ec_analysis.png" if args.save_prefix else None)
 
     # ------------------------------------------------------------------
     # Show / done
