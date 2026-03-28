@@ -507,7 +507,7 @@ def build_replay_network(
     scaffold_rate=720.0, scaffold_weight=0.55,
     # Background drive rates [Hz]
     # Watson UPDATE-2: SUP receives ~3.4x stronger DG/EC input than DEEP
-    rate_ec_ca1_pyr=580.0,
+    rate_ec_ca1_pyr=200.0,         # reduced from 580 Hz (bio: ~200 Hz EC III input)
     rate_dg_ca3_sup=820.0,  rate_dg_ca3_deep=220.0,
     rate_ec_ca3_sup=530.0,  rate_ec_ca3_deep=150.0,
     rate_ca3_drive_sup=400.0, rate_ca3_drive_deep=120.0,
@@ -518,6 +518,17 @@ def build_replay_network(
     # Synaptic weights (mV; fixed across scales — synapse count scales instead)
     w_seq_fwd=1.50,  w_seq_bwd=0.30,  w_sup_local=0.90,
     w_sup_to_deep=1.30, w_deep_local=0.85, w_deep_fwd=0.70, w_deep_to_sup=0.20,
+    # Schaffer collateral weights (mV per synapse)
+    # Bio: single Schaffer EPSP ~0.1-0.3 mV (Andersen 2007).
+    # Previous values (1.8/2.2) were 9-11× too high → CA1 fired at 296 Hz.
+    # Reduced by 6× to bring CA1 into the 5-20 Hz biological range.
+    w_schaffer_sup_pyr=0.30,    w_schaffer_deep_pyr=0.35,
+    w_schaffer_sup_basket=0.25, w_schaffer_deep_basket=0.30,
+    # CA1 local inhibition: strengthen basket→pyr to help balance
+    w_ca1_ie=-3.5,    # basket→PYR (was -2.0; increased to counter residual exc)
+    w_ca1_ee=0.5,     # PYR→PYR (unchanged)
+    w_ca1_ei=0.5,     # PYR→basket (unchanged)
+    w_ca1_oe=-1.5,    # OLM→PYR (unchanged)
     # Parallel
     n_threads=8,
 ):
@@ -734,20 +745,20 @@ def build_replay_network(
     print("  Wiring Schaffer collaterals (fixed_indegree)...")
     t_sch = time.perf_counter()
 
-    fixed_connect(CA3_SUP,  CA1_PYR,    K("schaffer_sup_pyr",     N_ca3_sup),  1.8, d_slow)
-    fixed_connect(CA3_DEEP, CA1_PYR,    K("schaffer_deep_pyr",    N_ca3_deep), 2.2, d_slow)
-    fixed_connect(CA3_SUP,  CA1_BASKET, K("schaffer_sup_basket",  N_ca3_sup),  1.5, d_fast)
-    fixed_connect(CA3_DEEP, CA1_BASKET, K("schaffer_deep_basket", N_ca3_deep), 2.0, d_fast)
+    fixed_connect(CA3_SUP,  CA1_PYR,    K("schaffer_sup_pyr",     N_ca3_sup),  w_schaffer_sup_pyr,    d_slow)
+    fixed_connect(CA3_DEEP, CA1_PYR,    K("schaffer_deep_pyr",    N_ca3_deep), w_schaffer_deep_pyr,   d_slow)
+    fixed_connect(CA3_SUP,  CA1_BASKET, K("schaffer_sup_basket",  N_ca3_sup),  w_schaffer_sup_basket, d_fast)
+    fixed_connect(CA3_DEEP, CA1_BASKET, K("schaffer_deep_basket", N_ca3_deep), w_schaffer_deep_basket,d_fast)
     print(f"    done in {time.perf_counter()-t_sch:.1f}s")
 
     # ---- CA1 local (fixed_indegree) -----------------------------------------
     print("  Wiring CA1 local (fixed_indegree)...")
     t_ca1 = time.perf_counter()
 
-    fixed_connect(CA1_PYR,    CA1_PYR,    K("ca1_EE", N_ca1_pyr),     0.5,  d_slow)
-    fixed_connect(CA1_PYR,    CA1_BASKET, K("ca1_EI", N_ca1_pyr),     0.5,  d_fast)
-    fixed_connect(CA1_BASKET, CA1_PYR,    K("ca1_IE", N_ca1_basket),  -2.0, d_fast)
-    fixed_connect(CA1_OLM,    CA1_PYR,    K("ca1_OE", N_ca1_olm),    -1.5, d_slow)
+    fixed_connect(CA1_PYR,    CA1_PYR,    K("ca1_EE", N_ca1_pyr),     w_ca1_ee,  d_slow)
+    fixed_connect(CA1_PYR,    CA1_BASKET, K("ca1_EI", N_ca1_pyr),     w_ca1_ei,  d_fast)
+    fixed_connect(CA1_BASKET, CA1_PYR,    K("ca1_IE", N_ca1_basket),  w_ca1_ie,  d_fast)
+    fixed_connect(CA1_OLM,    CA1_PYR,    K("ca1_OE", N_ca1_olm),     w_ca1_oe,  d_slow)
     print(f"    done in {time.perf_counter()-t_ca1:.1f}s")
 
     # ---- Replay triggers and scaffold ---------------------------------------
