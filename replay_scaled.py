@@ -1034,6 +1034,253 @@ def build_ec_lii(
 
 
 # ============================================================================
+# Phase 2 — Python STC (Synaptic Tagging and Capture) hook
+# ============================================================================
+
+@dataclass
+class STCHook:
+    """
+    Between-SWR synaptic tagging and capture state for the CA1→EC projection.
+
+    Called once after each SWR simulation epoch via run_stc_hook().
+    Maintains per-synapse tag strength and a per-EC-neuron PRP pool across
+    calls, then applies L-LTP weight capture when PRP threshold is crossed.
+
+    Why this is in Python, not NEST
+    --------------------------------
+    NEST 3.9.0 on MN5 serialises all stdp_synapse Connect() calls regardless
+    of rule — see build_ec_lii() docstring.  Python-level STDP using
+    GetStatus / SetStatus on a pre-fetched SynapseCollection is both faster
+    and gives full control over the two-timescale (tag + PRP) logic.
+
+    Algorithm (Frey & Morris 1997 / Redondo & Morris 2011)
+    -------------------------------------------------------
+    After each SWR epoch [t_swr_start, t_swr_end]:
+
+    1. GetConnections(target=EC_LII)  — only scans EC's ~600k incoming slots
+    2. Identify coincident CA1→EC pairs: CA1 pre fires before EC post within
+       the STDP window → LTP tag;  post before pre → LTD tag.
+    3. Tag strength decays exponentially with sim time (tau_tag).
+    4. PRP pool per EC neuron accumulates with each SWR activation.
+       When PRP_pool[i] ≥ PRP_threshold: all tagged synapses onto neuron i
+       capture to L-LTP (permanent weight increase up to w_max).
+    5. Weight changes written back via SetStatus.
+
+    Attributes stored between calls
+    --------------------------------
+    conns        SynapseCollection — fetched once, reused every call
+    w            float32 array     — current weights (mirrors NEST state)
+    tag          float32 array     — per-synapse tag strength (0 = untagged)
+    tag_time_ms  float32 array     — sim time when tag was last set
+    prp_pool     float32 array     — per-EC-neuron PRP accumulation
+    ltp_done     bool array        — synapses that have captured to L-LTP
+    post_idx     int32 array       — EC neuron index for each synapse (for PRP)
+    n_calls      int               — number of SWR events processed so far
+    history      list[dict]        — per-event summary (for HDF5 export)
+    """
+    conns       : object             # nest.SynapseCollection
+    w           : np.ndarray         # [n_syn] float32
+    tag         : np.ndarray         # [n_syn] float32
+    tag_time_ms : np.ndarray         # [n_syn] float32
+    prp_pool    : np.ndarray         # [n_ec]  float32
+    ltp_done    : np.ndarray         # [n_syn] bool
+    post_idx    : np.ndarray         # [n_syn] int32  (index into EC population)
+    n_calls     : int = 0
+    history     : list = None
+
+    def __post_init__(self):
+        if self.history is None:
+            self.history = []
+
+
+def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
+    """
+    Initialise the STC hook by fetching the CA1→EC SynapseCollection.
+
+    Uses GetConnections(target=EC_LII) which scans only EC's incoming slots
+    (~600k synapses, ~0.09s) rather than the full kernel (~2h).
+    Called once after build_ec_lii(), before the first nest.Simulate().
+    """
+    import nest
+
+    t0 = time.perf_counter()
+    print("\n  [STCHook] Fetching CA1→EC synapse collection "
+          "(target-only scan, fast)...")
+
+    conns = nest.GetConnections(target=ec_module.population)
+    n_syn = len(conns)
+    print(f"  [STCHook] {n_syn:,} synapses found in {time.perf_counter()-t0:.2f}s")
+
+    w_arr  = np.array(nest.GetStatus(conns, "weight"), dtype=np.float32)
+    if w_init_override is not None:
+        w_arr[:] = float(w_init_override)
+
+    # Map each synapse to its EC neuron index (0-based within EC population)
+    post_ids    = np.array(nest.GetStatus(conns, "target"), dtype=np.int64)
+    ec_ids      = np.array(ec_module.population.tolist(), dtype=np.int64)
+    ec_id_to_idx = {gid: i for i, gid in enumerate(ec_ids)}
+    post_idx    = np.array([ec_id_to_idx[gid] for gid in post_ids], dtype=np.int32)
+
+    return STCHook(
+        conns       = conns,
+        w           = w_arr,
+        tag         = np.zeros(n_syn, dtype=np.float32),
+        tag_time_ms = np.full(n_syn, -1e9, dtype=np.float32),
+        prp_pool    = np.zeros(ec_module.N, dtype=np.float32),
+        ltp_done    = np.zeros(n_syn, dtype=bool),
+        post_idx    = post_idx,
+    )
+
+
+def run_stc_hook(
+    stc        : STCHook,
+    ec_module,
+    t_swr_start : float,
+    t_swr_end   : float,
+    current_t_ms: float,
+    # STDP parameters
+    tau_plus    : float = 20.0,   # ms — LTP time constant
+    A_plus      : float = 0.01,   # LTP magnitude per coincidence
+    A_minus     : float = 0.008,  # LTD magnitude per coincidence
+    delay_ms    : float = 3.0,    # CA1→EC axonal delay (ms)
+    # Tag parameters
+    tau_tag_ms  : float = 2000.0, # tag decay time constant (sim ms)
+    # PRP / L-LTP parameters
+    PRP_threshold : float = 3.0,  # SWR activations needed to produce PRP
+    w_max         : float = 1.5,  # max weight after L-LTP capture
+    w_min         : float = 0.1,  # min weight after LTD
+) -> dict:
+    """
+    Run one STC update cycle after a completed SWR epoch.
+
+    Steps
+    -----
+    1. Read current CA1 and EC spike times from NEST recorders.
+    2. For each CA1→EC synapse, find coincident (pre, post) pairs within
+       the SWR window and compute STDP Δw using nearest-neighbour pairing.
+    3. Decay existing tags, then refresh/set tags for updated synapses.
+    4. Accumulate PRP pool per EC neuron.
+    5. Apply L-LTP capture where PRP ≥ threshold AND tag alive.
+    6. Write updated weights back to NEST via SetStatus.
+    7. Return a summary dict appended to stc.history.
+    """
+    import nest
+
+    t_hook = time.perf_counter()
+    stc.n_calls += 1
+
+    # ---- 1. Read spike times from this SWR window ---------------------------
+    # CA1 spikes
+    ev_ca1 = nest.GetStatus(ec_module.pre_nc, "events")
+    # pre_nc is a NodeCollection — GetStatus returns list, one per neuron
+    # Aggregate into flat arrays
+    ca1_t_all = np.concatenate([np.array(e["times"])   for e in ev_ca1]).astype(np.float32)
+    ca1_s_all = np.concatenate([np.array(e["senders"]) for e in ev_ca1]).astype(np.int64)
+
+    # EC spikes
+    ev_ec = nest.GetStatus(ec_module.spike_rec, "events")[0]
+    ec_t_all = np.array(ev_ec["times"],   dtype=np.float32)
+    ec_s_all = np.array(ev_ec["senders"], dtype=np.int64)
+
+    # Filter to SWR window (with ±delay margin)
+    margin = delay_ms + tau_plus * 3
+    ca1_mask = (ca1_t_all >= t_swr_start - margin) & (ca1_t_all <= t_swr_end + margin)
+    ec_mask  = (ec_t_all  >= t_swr_start - margin) & (ec_t_all  <= t_swr_end + margin)
+    ca1_t = ca1_t_all[ca1_mask];  ca1_s = ca1_s_all[ca1_mask]
+    ec_t  = ec_t_all[ec_mask];    ec_s  = ec_s_all[ec_mask]
+
+    # ---- 2. STDP Δw per synapse (vectorised nearest-neighbour) --------------
+    syn_data   = nest.GetStatus(stc.conns, ["source", "target"])
+    pre_ids    = np.array([s["source"] for s in syn_data], dtype=np.int64)
+    post_ids_g = np.array([s["target"] for s in syn_data], dtype=np.int64)
+
+    delta_w = np.zeros(len(stc.w), dtype=np.float32)
+
+    # Build lookup: CA1 neuron → last spike time in window
+    ca1_last = {}
+    for t, s in zip(ca1_t, ca1_s):
+        if s not in ca1_last or t > ca1_last[s]:
+            ca1_last[s] = float(t)
+
+    # Build lookup: EC neuron → last spike time in window
+    ec_last = {}
+    for t, s in zip(ec_t, ec_s):
+        if s not in ec_last or t > ec_last[s]:
+            ec_last[s] = float(t)
+
+    for i, (pre, post) in enumerate(zip(pre_ids, post_ids_g)):
+        t_pre  = ca1_last.get(int(pre),  None)
+        t_post = ec_last.get(int(post),  None)
+        if t_pre is None or t_post is None:
+            continue
+        # Account for axonal delay: effective pre arrival = t_pre + delay
+        dt = (t_post - t_pre) - delay_ms   # >0: LTP,  <0: LTD
+        if dt >= 0:
+            delta_w[i] = A_plus  * np.exp(-dt / tau_plus)
+        else:
+            delta_w[i] = -A_minus * np.exp(dt  / tau_plus)   # dt<0 → exp(pos)
+
+    # ---- 3. Tag decay and refresh -------------------------------------------
+    dt_since_tag = current_t_ms - stc.tag_time_ms           # ms since tag set
+    decay_factor = np.exp(-np.clip(dt_since_tag, 0, 1e6) / tau_tag_ms)
+    stc.tag *= decay_factor
+
+    # Set/refresh tag on synapses with STDP activity this event
+    active = np.abs(delta_w) > 1e-6
+    stc.tag[active]         = np.abs(delta_w[active])
+    stc.tag_time_ms[active] = current_t_ms
+
+    # ---- 4. PRP pool per EC neuron -------------------------------------------
+    # Each SWR activation that sets a tag contributes to PRP of post neuron
+    np.add.at(stc.prp_pool,
+               stc.post_idx[active],
+               np.abs(delta_w[active]))
+
+    # ---- 5. E-LTP (immediate) and L-LTP capture (threshold-gated) -----------
+    # E-LTP: apply Δw immediately (reversible, will decay without L-LTP)
+    stc.w = np.clip(stc.w + delta_w, w_min, w_max)
+
+    # L-LTP: capture if PRP sufficient AND tag alive AND not already captured
+    tag_alive   = stc.tag > 1e-4
+    prp_above   = stc.prp_pool[stc.post_idx] >= PRP_threshold
+    new_capture = tag_alive & prp_above & ~stc.ltp_done
+    if new_capture.any():
+        # Permanent weight consolidation: boost by 30% capped at w_max
+        stc.w[new_capture] = np.minimum(stc.w[new_capture] * 1.3, w_max)
+        stc.ltp_done |= new_capture
+
+    # ---- 6. Write weights back to NEST ---------------------------------------
+    nest.SetStatus(stc.conns, "weight", stc.w.tolist())
+
+    # ---- 7. Summary ----------------------------------------------------------
+    n_active     = int(active.sum())
+    n_ltp_new    = int(new_capture.sum())
+    n_ltp_total  = int(stc.ltp_done.sum())
+    w_mean       = float(stc.w.mean())
+    w_ltp_mean   = float(stc.w[stc.ltp_done].mean()) if n_ltp_total > 0 else float('nan')
+    dt_hook      = time.perf_counter() - t_hook
+
+    summary = dict(
+        event        = stc.n_calls,
+        t_swr_start  = t_swr_start,
+        t_swr_end    = t_swr_end,
+        n_active_syn = n_active,
+        n_ltp_new    = n_ltp_new,
+        n_ltp_total  = n_ltp_total,
+        w_mean       = w_mean,
+        w_ltp_mean   = w_ltp_mean,
+        dt_hook_s    = dt_hook,
+    )
+    stc.history.append(summary)
+
+    print(f"  [STCHook] event={stc.n_calls}  "
+          f"active={n_active:,}  L-LTP_new={n_ltp_new:,}  "
+          f"L-LTP_total={n_ltp_total:,}  "
+          f"w_mean={w_mean:.4f}  ({dt_hook:.2f}s)")
+    return summary
+
+
+# ============================================================================
 # Replay quality metric
 # ============================================================================
 
@@ -1237,7 +1484,7 @@ def print_report(net, sim_ms, scale_label, ec_module=None):
 # ============================================================================
 
 def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
-                     ec_module=None):
+                     ec_module=None, stc_hook=None):
     """
     Save all simulation results to an HDF5 file for offline plotting.
 
@@ -1408,6 +1655,26 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             t_ec, _ = spk_cache["ec_lii"]
             sg.attrs["mean_rate_ec_lii"] = float(len(t_ec) / (ec_module.N * sim_ms / 1000.0))
 
+        # --- STC consolidation history (Phase 2) -----------------------------
+        if stc_hook is not None and stc_hook.history:
+            stc_grp = h5.create_group("stc")
+            hist    = stc_hook.history
+            stc_grp.create_dataset("event",        data=np.array([h["event"]        for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("t_swr_start",  data=np.array([h["t_swr_start"]  for h in hist], dtype=np.float32))
+            stc_grp.create_dataset("t_swr_end",    data=np.array([h["t_swr_end"]    for h in hist], dtype=np.float32))
+            stc_grp.create_dataset("n_active_syn", data=np.array([h["n_active_syn"] for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_ltp_new",    data=np.array([h["n_ltp_new"]    for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_ltp_total",  data=np.array([h["n_ltp_total"]  for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("w_mean",       data=np.array([h["w_mean"]       for h in hist], dtype=np.float32))
+            stc_grp.create_dataset("w_ltp_mean",   data=np.array([h["w_ltp_mean"]   for h in hist], dtype=np.float32))
+            # Final weight distribution snapshot
+            stc_grp.create_dataset("w_final",      data=stc_hook.w.astype(np.float32), **compress)
+            stc_grp.create_dataset("ltp_mask",     data=stc_hook.ltp_done.astype(np.uint8), **compress)
+            stc_grp.attrs["n_swr_events"] = stc_hook.n_calls
+            stc_grp.attrs["w_init"]       = ec_module.w_init
+            print(f"  [HDF5] STC history: {stc_hook.n_calls} events, "
+                  f"{int(stc_hook.ltp_done.sum()):,} L-LTP synapses")
+
     print(f">>> Saved HDF5: {outpath}")
 
 
@@ -1466,9 +1733,25 @@ Cortical module:
              "Defaults to --scale if omitted.")
     parser.add_argument(
         "--ec-lii-k", type=int, default=50, metavar="K",
-        help="Target in-degree K for the CA1→EC projection (default: 50). "
-             "static_synapse is fast at any K on MN5; K=50 is a safe start.")
+        help="Target in-degree K for the CA1→EC projection (default: 50).")
+    # ---- Phase 2 STC flags --------------------------------------------------
+    parser.add_argument(
+        "--stc", action="store_true",
+        help="Enable Phase 2 STC hook: Python STDP + tag/PRP between SWR epochs. "
+             "Requires --ec-lii.")
+    parser.add_argument(
+        "--n-swr", type=int, default=7, metavar="N",
+        help="Number of SWR epochs for multi-epoch consolidation run (default: 7). "
+             "Each epoch simulates one forward+reverse SWR pair. "
+             "Total sim time = n_swr × epoch_ms.")
+    parser.add_argument(
+        "--epoch-ms", type=float, default=1000.0, metavar="MS",
+        help="Duration of each SWR epoch in ms (default: 1000). "
+             "The SWR events are placed at fixed offsets within each epoch.")
     args = parser.parse_args()
+
+    if args.stc and not args.ec_lii:
+        parser.error("--stc requires --ec-lii")
 
     cfg = build_scale_config(args.scale)
 
@@ -1476,19 +1759,22 @@ Cortical module:
                  if args.threads is not None
                  else int(os.environ.get("OMP_NUM_THREADS", cfg["n_threads_default"])))
 
-    SIM_MS   = args.sim_ms
     total_N  = sum(cfg[k] for k in _REF_100PCT)
     n_groups = cfg["n_seq_groups"]
 
-    # EC LII neuron count — independently scalable, defaults to hippocampal scale
     ec_lii_pct = args.ec_lii_scale if args.ec_lii_scale is not None else args.scale
     N_ec_lii   = _round_to_multiple(
         _REF_CORTEX["N_ec_lii"] * ec_lii_pct / 100.0,
         n_groups,
     )
 
+    # Total simulation time: either single sim_ms OR n_swr × epoch_ms
+    SIM_MS       = args.sim_ms if not args.stc else args.epoch_ms
+    n_epochs     = args.n_swr if args.stc else 1
+    total_sim_ms = SIM_MS * n_epochs
+
     print(f"\n{'='*72}")
-    print(f"  Watson et al. 2025 — Bidirectional Replay  [v4: EC LII module]")
+    print(f"  Watson et al. 2025 — Bidirectional Replay  [v5: STC Phase 2]")
     print(f"  Scale    : {cfg['label']}")
     print(f"  CA3_SUP  : {cfg['N_ca3_sup']:>10,}  CA3_DEEP : {cfg['N_ca3_deep']:>8,}")
     print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {n_groups:>8,}  "
@@ -1497,7 +1783,10 @@ Cortical module:
     if args.ec_lii:
         print(f"  EC LII   : {N_ec_lii:>10,}  ({ec_lii_pct}% of 100k ref)  "
               f"K={args.ec_lii_k}  [--ec-lii]")
-    print(f"  Threads  : {n_threads}  |  Sim: {SIM_MS} ms")
+    if args.stc:
+        print(f"  STC hook : ENABLED  n_swr={n_epochs}  "
+              f"epoch={SIM_MS:.0f} ms  total={total_sim_ms:.0f} ms  [--stc]")
+    print(f"  Threads  : {n_threads}  |  Sim: {total_sim_ms:.0f} ms")
     print(f"  Connect  : fixed_indegree + pairwise_bernoulli (C++, OpenMP)")
     print(f"{'='*72}\n")
 
@@ -1526,14 +1815,50 @@ Cortical module:
             K_ca1_ec = args.ec_lii_k,
         )
 
-    print(f"\n>>> Simulating {SIM_MS} ms...")
+    # ---- Optional Phase 2: STC hook initialisation ---------------------------
+    stc_hook = None
+    if args.stc and ec_module is not None:
+        print(">>> Initialising STC hook (Phase 2)...")
+        stc_hook = build_stc_hook(ec_module)
+
+    # ---- Simulation: single epoch or multi-epoch STC loop -------------------
+    swr_fwd = net["swr_fwd"]
+    swr_rev = net["swr_rev"]
+
+    print(f"\n>>> Simulating {n_epochs} epoch(s) × {SIM_MS:.0f} ms "
+          f"= {total_sim_ms:.0f} ms total...")
     t_sim = time.perf_counter()
-    nest.Simulate(SIM_MS)
-    print(f"    Simulation done in {time.perf_counter()-t_sim:.1f}s")
+
+    for epoch in range(n_epochs):
+        epoch_t0 = epoch * SIM_MS
+        nest.Simulate(SIM_MS)
+
+        if stc_hook is not None:
+            current_t = epoch_t0 + SIM_MS
+            # Run STC hook for the forward SWR event in this epoch
+            run_stc_hook(
+                stc_hook, ec_module,
+                t_swr_start = epoch_t0 + swr_fwd[0],
+                t_swr_end   = epoch_t0 + swr_fwd[1],
+                current_t_ms= current_t,
+            )
+            # Run STC hook for the reverse SWR event
+            run_stc_hook(
+                stc_hook, ec_module,
+                t_swr_start = epoch_t0 + swr_rev[0],
+                t_swr_end   = epoch_t0 + swr_rev[1],
+                current_t_ms= current_t,
+            )
+
+        if n_epochs > 1:
+            print(f"    Epoch {epoch+1}/{n_epochs} done "
+                  f"({time.perf_counter()-t_sim:.1f}s elapsed)")
+
+    print(f"    Total simulation done in {time.perf_counter()-t_sim:.1f}s")
 
     rank = _mpi_rank()
 
-    # ---- HDF5 export (gather+write on rank 0) --------------------------------
+    # ---- HDF5 export ---------------------------------------------------------
     scale_tag = f"{args.scale}pct"
     out_dir   = os.path.join(_script_dir, f"replay_output_{scale_tag}")
     if rank == 0:
@@ -1545,8 +1870,9 @@ Cortical module:
     if rank == 0:
         os.makedirs(os.path.dirname(os.path.abspath(hdf5_path)), exist_ok=True)
 
-    print(f"\n>>> [rank {rank}] Entering HDF5 export (gather + write on rank 0)...")
-    save_replay_hdf5(net, SIM_MS, cfg["label"], hdf5_path, ec_module=ec_module)
+    print(f"\n>>> [rank {rank}] Entering HDF5 export...")
+    save_replay_hdf5(net, total_sim_ms, cfg["label"], hdf5_path,
+                     ec_module=ec_module, stc_hook=stc_hook)
 
     if rank != 0:
         print(f">>> [rank {rank}] Done (non-root rank exiting).")
