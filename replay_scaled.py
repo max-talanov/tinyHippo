@@ -912,16 +912,18 @@ class ECModule:
     K_ca1_ec    in-degree of the CA1→EC projection
     w_init      initial synaptic weight
     """
-    population : object   # nest.NodeCollection  — EC LII/III
-    spike_rec  : object   # nest.NodeCollection  — spike_recorder
-    pre_nc     : object   # nest.NodeCollection  — CA1 PYR (STC hook source)
-    N          : int
+    population    : object   # nest.NodeCollection  — EC LII/III
+    spike_rec     : object   # nest.NodeCollection  — EC spike_recorder
+    ca1_spike_rec : object   # nest.NodeCollection  — CA1 PYR spike_recorder (for STC)
+    pre_nc        : object   # nest.NodeCollection  — CA1 PYR neurons (reference)
+    N             : int
     K_ca1_ec   : int
     w_init     : float
 
 
 def build_ec_lii(
     ca1_pyr,
+    ca1_spike_rec,           # spike_recorder for CA1 PYR (net["spk_pyr"])
     N_ec_lii     : int,
     K_ca1_ec     : int   = 50,
     w_ca1_ec     : float = 1.0,
@@ -1024,12 +1026,13 @@ def build_ec_lii(
     print(f"  [ECModule] Total EC build: {time.perf_counter()-t0:.1f}s")
 
     return ECModule(
-        population = EC_LII,
-        spike_rec  = spk_ec,
-        pre_nc     = ca1_pyr,
-        N          = N_ec_lii,
-        K_ca1_ec   = K,
-        w_init     = w_ca1_ec,
+        population    = EC_LII,
+        spike_rec     = spk_ec,
+        ca1_spike_rec = ca1_spike_rec,
+        pre_nc        = ca1_pyr,
+        N             = N_ec_lii,
+        K_ca1_ec      = K,
+        w_init        = w_ca1_ec,
     )
 
 
@@ -1084,7 +1087,9 @@ class STCHook:
     tag_time_ms : np.ndarray         # [n_syn] float32
     prp_pool    : np.ndarray         # [n_ec]  float32
     ltp_done    : np.ndarray         # [n_syn] bool
-    post_idx    : np.ndarray         # [n_syn] int32  (index into EC population)
+    post_idx    : np.ndarray         # [n_syn] int32  (EC neuron index for PRP)
+    pre_ids     : np.ndarray         # [n_syn] int64  — source GIDs (cached at build)
+    post_ids_g  : np.ndarray         # [n_syn] int64  — target GIDs (cached at build)
     n_calls     : int = 0
     history     : list = None
 
@@ -1105,21 +1110,27 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
 
     t0 = time.perf_counter()
     print("\n  [STCHook] Fetching CA1→EC synapse collection "
-          "(target-only scan, fast)...")
+          "(one-time scan, reused every epoch)...")
 
     conns = nest.GetConnections(target=ec_module.population)
     n_syn = len(conns)
     print(f"  [STCHook] {n_syn:,} synapses found in {time.perf_counter()-t0:.2f}s")
 
-    w_arr  = np.array(nest.GetStatus(conns, "weight"), dtype=np.float32)
+    w_arr = np.array(nest.GetStatus(conns, "weight"), dtype=np.float32)
     if w_init_override is not None:
         w_arr[:] = float(w_init_override)
 
-    # Map each synapse to its EC neuron index (0-based within EC population)
-    post_ids    = np.array(nest.GetStatus(conns, "target"), dtype=np.int64)
-    ec_ids      = np.array(ec_module.population.tolist(), dtype=np.int64)
+    # Cache source/target GIDs once — reused every epoch, no re-scan needed
+    print("  [STCHook] Caching source/target GIDs...")
+    t_cache      = time.perf_counter()
+    pre_ids_arr  = np.array(nest.GetStatus(conns, "source"), dtype=np.int64)
+    post_ids_arr = np.array(nest.GetStatus(conns, "target"), dtype=np.int64)
+    print(f"  [STCHook] GID cache done in {time.perf_counter()-t_cache:.2f}s")
+
+    # Map each synapse to its EC neuron index (0-based) for PRP accumulation
+    ec_ids       = np.array(ec_module.population.tolist(), dtype=np.int64)
     ec_id_to_idx = {gid: i for i, gid in enumerate(ec_ids)}
-    post_idx    = np.array([ec_id_to_idx[gid] for gid in post_ids], dtype=np.int32)
+    post_idx     = np.array([ec_id_to_idx[gid] for gid in post_ids_arr], dtype=np.int32)
 
     return STCHook(
         conns       = conns,
@@ -1129,6 +1140,8 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
         prp_pool    = np.zeros(ec_module.N, dtype=np.float32),
         ltp_done    = np.zeros(n_syn, dtype=bool),
         post_idx    = post_idx,
+        pre_ids     = pre_ids_arr,
+        post_ids_g  = post_ids_arr,
     )
 
 
@@ -1170,29 +1183,27 @@ def run_stc_hook(
     stc.n_calls += 1
 
     # ---- 1. Read spike times from this SWR window ---------------------------
-    # CA1 spikes
-    ev_ca1 = nest.GetStatus(ec_module.pre_nc, "events")
-    # pre_nc is a NodeCollection — GetStatus returns list, one per neuron
-    # Aggregate into flat arrays
-    ca1_t_all = np.concatenate([np.array(e["times"])   for e in ev_ca1]).astype(np.float32)
-    ca1_s_all = np.concatenate([np.array(e["senders"]) for e in ev_ca1]).astype(np.int64)
+    # CA1 spikes — read from spike_recorder (neurons have no "events" key)
+    ev_ca1    = nest.GetStatus(ec_module.ca1_spike_rec, "events")[0]
+    ca1_t_all = np.array(ev_ca1["times"],   dtype=np.float32)
+    ca1_s_all = np.array(ev_ca1["senders"], dtype=np.int64)
 
     # EC spikes
-    ev_ec = nest.GetStatus(ec_module.spike_rec, "events")[0]
+    ev_ec    = nest.GetStatus(ec_module.spike_rec, "events")[0]
     ec_t_all = np.array(ev_ec["times"],   dtype=np.float32)
     ec_s_all = np.array(ev_ec["senders"], dtype=np.int64)
 
     # Filter to SWR window (with ±delay margin)
-    margin = delay_ms + tau_plus * 3
+    margin   = delay_ms + tau_plus * 3
     ca1_mask = (ca1_t_all >= t_swr_start - margin) & (ca1_t_all <= t_swr_end + margin)
     ec_mask  = (ec_t_all  >= t_swr_start - margin) & (ec_t_all  <= t_swr_end + margin)
     ca1_t = ca1_t_all[ca1_mask];  ca1_s = ca1_s_all[ca1_mask]
     ec_t  = ec_t_all[ec_mask];    ec_s  = ec_s_all[ec_mask]
 
     # ---- 2. STDP Δw per synapse (vectorised nearest-neighbour) --------------
-    syn_data   = nest.GetStatus(stc.conns, ["source", "target"])
-    pre_ids    = np.array([s["source"] for s in syn_data], dtype=np.int64)
-    post_ids_g = np.array([s["target"] for s in syn_data], dtype=np.int64)
+    # Use GIDs cached at build time — no GetStatus call per epoch
+    pre_ids    = stc.pre_ids
+    post_ids_g = stc.post_ids_g
 
     delta_w = np.zeros(len(stc.w), dtype=np.float32)
 
