@@ -1821,9 +1821,10 @@ Cortical module:
     if args.ec_lii:
         print(">>> Building EC LII/III module...")
         ec_module = build_ec_lii(
-            ca1_pyr  = net["PYR"],
-            N_ec_lii = N_ec_lii,
-            K_ca1_ec = args.ec_lii_k,
+            ca1_pyr       = net["PYR"],
+            ca1_spike_rec = net["spk_pyr"],
+            N_ec_lii      = N_ec_lii,
+            K_ca1_ec      = args.ec_lii_k,
         )
 
     # ---- Optional Phase 2: STC hook initialisation ---------------------------
