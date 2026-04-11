@@ -394,6 +394,173 @@ def main():
         _maybe_save(fig5, f"{args.save_prefix}_fig5_ec_analysis.png" if args.save_prefix else None)
 
     # ------------------------------------------------------------------
+    # Figs 6-8 — STC consolidation figures (only when /stc group present)
+    # ------------------------------------------------------------------
+    with h5py.File(args.inp, "r") as h5:
+        stc_present = "stc" in h5
+        if stc_present:
+            s = h5["stc"]
+            stc_event      = np.array(s["event"],        dtype=np.int32)
+            stc_t_start    = np.array(s["t_swr_start"],  dtype=np.float32)
+            stc_n_tagged   = np.array(s["n_tagged_syn"], dtype=np.int32)   if "n_tagged_syn" in s else np.array(s["n_active_syn"], dtype=np.int32)
+            stc_n_ec_fired = np.array(s["n_ec_fired"],   dtype=np.int32)   if "n_ec_fired"   in s else np.zeros_like(stc_event)
+            stc_prp_mean   = np.array(s["prp_mean"],     dtype=np.float32) if "prp_mean"     in s else np.zeros_like(stc_event, dtype=np.float32)
+            stc_prp_max    = np.array(s["prp_max"],      dtype=np.float32) if "prp_max"      in s else np.zeros_like(stc_event, dtype=np.float32)
+            stc_n_ltp_new  = np.array(s["n_ltp_new"],   dtype=np.int32)
+            stc_n_ltp_tot  = np.array(s["n_ltp_total"], dtype=np.int32)
+            stc_w_mean     = np.array(s["w_mean"],       dtype=np.float32)
+            stc_w_ltp_mean = np.array(s["w_ltp_mean"],  dtype=np.float32)
+            stc_w_final    = np.array(s["w_final"],      dtype=np.float32)
+            stc_ltp_mask   = np.array(s["ltp_mask"],     dtype=bool)
+            stc_w_init     = float(s.attrs.get("w_init", 1.0))
+            stc_n_syn      = int(s.attrs.get("n_synapses", len(stc_w_final)))
+            stc_n_ec       = int(s.attrs.get("n_ec_neurons", 1))
+            # Optional per-synapse arrays
+            stc_post_idx   = np.array(s["post_idx"],       dtype=np.int32)  if "post_idx"       in s else None
+            stc_prp_pool   = np.array(s["prp_pool_final"], dtype=np.float32) if "prp_pool_final" in s else None
+            stc_tag_final  = np.array(s["tag_final"],      dtype=np.float32) if "tag_final"      in s else None
+
+    if stc_present:
+        # ---------------------------------------------------------------
+        # Fig 6 — Consolidation curve
+        # Mean CA1→EC weight + L-LTP fraction vs SWR event number
+        # ---------------------------------------------------------------
+        fig6, (ax6a, ax6b, ax6c) = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+        fig6.suptitle(f"STC Consolidation Curve  [{scale}]",
+                      fontsize=12, fontweight="bold")
+
+        ev = stc_event
+
+        ax6a.plot(ev, stc_w_mean, "o-", color="steelblue",  lw=1.5, ms=5, label="All synapses")
+        ax6a.plot(ev, np.where(np.isfinite(stc_w_ltp_mean), stc_w_ltp_mean, np.nan),
+                  "s--", color="darkorange", lw=1.5, ms=5, label="L-LTP synapses only")
+        ax6a.axhline(stc_w_init, color="gray", lw=1, ls=":", label=f"w_init = {stc_w_init:.2f}")
+        ax6a.set_ylabel("Mean CA1→EC weight", fontsize=9)
+        ax6a.set_title("A  Consolidation curve — mean synaptic weight", fontsize=9, loc="left")
+        ax6a.legend(fontsize=7)
+        ax6a.grid(alpha=0.3)
+
+        ltp_frac = stc_n_ltp_tot / max(stc_n_syn, 1) * 100.0
+        ax6b.bar(ev, ltp_frac, color="darkorange", alpha=0.75, label="L-LTP fraction")
+        ax6b.plot(ev, stc_n_ltp_new / max(stc_n_syn, 1) * 100, "^-",
+                  color="firebrick", ms=5, lw=1, label="New captures this event")
+        ax6b.set_ylabel("% of CA1→EC synapses", fontsize=9)
+        ax6b.set_title("B  Cumulative L-LTP fraction per SWR event", fontsize=9, loc="left")
+        ax6b.legend(fontsize=7)
+        ax6b.grid(alpha=0.3)
+
+        ax6c.plot(ev, stc_prp_mean, "o-", color="mediumseagreen", lw=1.5, ms=5,
+                  label="Mean PRP pool (SWR events)")
+        ax6c.plot(ev, stc_prp_max,  "v--", color="olive", lw=1, ms=4, alpha=0.7,
+                  label="Max PRP pool")
+        ax6c.plot(ev, stc_n_tagged / max(stc_n_syn, 1) * 100, "s-",
+                  color="slateblue", lw=1, ms=4, alpha=0.8,
+                  label="Tagged syn %")
+        ax6c.set_xlabel("SWR event #", fontsize=9)
+        ax6c.set_ylabel("PRP pool / Tag occupancy", fontsize=9)
+        ax6c.set_title("C  PRP pool accumulation + tag occupancy per event", fontsize=9, loc="left")
+        ax6c.legend(fontsize=7)
+        ax6c.grid(alpha=0.3)
+
+        fig6.tight_layout()
+        _maybe_save(fig6, f"{args.save_prefix}_fig6_stc_consolidation.png" if args.save_prefix else None)
+
+        # ---------------------------------------------------------------
+        # Fig 7 — Tag occupancy map
+        # % tagged synapses per EC neuron (final state) + PRP heatmap
+        # ---------------------------------------------------------------
+        fig7, axes7 = plt.subplots(1, 3, figsize=(16, 5))
+        fig7.suptitle(f"Tag Occupancy Map — final state  [{scale}]",
+                      fontsize=12, fontweight="bold")
+
+        # Panel A: final weight distribution
+        ax = axes7[0]
+        ax.hist(stc_w_final[~stc_ltp_mask], bins=50, color="steelblue",
+                alpha=0.75, label="E-LTP / untagged", density=True)
+        ax.hist(stc_w_final[stc_ltp_mask],  bins=50, color="darkorange",
+                alpha=0.75, label="L-LTP captured", density=True)
+        ax.axvline(stc_w_init, color="gray", ls=":", lw=1.5, label=f"w_init")
+        ax.set_xlabel("Synaptic weight", fontsize=9)
+        ax.set_ylabel("Density", fontsize=9)
+        ax.set_title("A  Final weight distribution", fontsize=9, loc="left")
+        ax.legend(fontsize=7)
+
+        # Panel B: per-EC-neuron tag occupancy (if post_idx available)
+        ax = axes7[1]
+        if stc_post_idx is not None and stc_tag_final is not None:
+            tag_occ = np.zeros(stc_n_ec, dtype=np.float32)
+            np.add.at(tag_occ, stc_post_idx, (stc_tag_final > 1e-4).astype(np.float32))
+            # Normalise: how many synapses each EC neuron receives
+            syn_per_ec = np.bincount(stc_post_idx, minlength=stc_n_ec).astype(np.float32)
+            tag_occ_pct = np.where(syn_per_ec > 0, tag_occ / syn_per_ec * 100, 0)
+            ax.hist(tag_occ_pct, bins=50, color="slateblue", alpha=0.8, density=False)
+            ax.set_xlabel("% tagged input synapses", fontsize=9)
+            ax.set_ylabel("# EC neurons", fontsize=9)
+            ax.set_title("B  Tag occupancy per EC neuron (final)", fontsize=9, loc="left")
+        else:
+            ax.text(0.5, 0.5, "post_idx not\nin this HDF5\n(re-run with v6+)",
+                    ha="center", va="center", transform=ax.transAxes, fontsize=9)
+
+        # Panel C: per-EC-neuron PRP pool (if available)
+        ax = axes7[2]
+        if stc_prp_pool is not None:
+            ax.hist(stc_prp_pool, bins=40, color="mediumseagreen", alpha=0.8, density=False)
+            ax.set_xlabel("PRP pool (SWR events fired)", fontsize=9)
+            ax.set_ylabel("# EC neurons", fontsize=9)
+            ax.set_title("C  PRP pool distribution (final)", fontsize=9, loc="left")
+        else:
+            ax.text(0.5, 0.5, "prp_pool not\nin this HDF5\n(re-run with v6+)",
+                    ha="center", va="center", transform=ax.transAxes, fontsize=9)
+
+        fig7.tight_layout()
+        _maybe_save(fig7, f"{args.save_prefix}_fig7_tag_occupancy.png" if args.save_prefix else None)
+
+        # ---------------------------------------------------------------
+        # Fig 8 — Consolidation index vs replay quality
+        # Fraction L-LTP synapses per event vs Spearman ρ (from /stats)
+        # ---------------------------------------------------------------
+        with h5py.File(args.inp, "r") as h5:
+            rho_fwd  = float(h5["stats"].attrs.get("rho_fwd",  float("nan")))
+            rho_rev  = float(h5["stats"].attrs.get("rho_rev",  float("nan")))
+
+        fig8, axes8 = plt.subplots(1, 2, figsize=(12, 4))
+        fig8.suptitle(f"Consolidation Index  [{scale}]", fontsize=12, fontweight="bold")
+
+        ax = axes8[0]
+        ltp_frac_final = stc_n_ltp_tot / max(stc_n_syn, 1) * 100
+        ax.plot(ev, ltp_frac_final, "o-", color="darkorange", lw=1.5, ms=5)
+        # Mark where L-LTP first appears
+        first_ltp = np.argmax(stc_n_ltp_tot > 0) if stc_n_ltp_tot.max() > 0 else None
+        if first_ltp is not None:
+            ax.axvline(ev[first_ltp], color="firebrick", ls="--", lw=1.2, alpha=0.8,
+                       label=f"First L-LTP @ event {ev[first_ltp]}")
+            ax.legend(fontsize=7)
+        ax.set_xlabel("SWR event #", fontsize=9)
+        ax.set_ylabel("% L-LTP synapses", fontsize=9)
+        ax.set_title("A  Consolidation build-up over SWR events", fontsize=9, loc="left")
+        ax.grid(alpha=0.3)
+
+        ax = axes8[1]
+        # Weight distribution at end: L-LTP vs E-LTP mean
+        means  = [stc_w_final[~stc_ltp_mask].mean() if (~stc_ltp_mask).any() else float("nan"),
+                  stc_w_final[stc_ltp_mask].mean()  if stc_ltp_mask.any()    else float("nan")]
+        labels = ["E-LTP\n(untagged/\ndecaying)", "L-LTP\n(consolidated)"]
+        colors = ["steelblue", "darkorange"]
+        bars   = ax.bar(labels, means, color=colors, alpha=0.8, width=0.5)
+        ax.bar_label(bars, fmt="%.3f", padding=3, fontsize=8)
+        ax.set_ylabel("Mean CA1→EC weight", fontsize=9)
+        ax.set_title(
+            f"B  E-LTP vs L-LTP weight means\n"
+            f"Replay quality: ρ_fwd={rho_fwd:+.3f}  ρ_rev={rho_rev:+.3f}",
+            fontsize=9, loc="left")
+        ax.set_ylim(0, max(filter(np.isfinite, means + [stc_w_init * 2])) * 1.3 if means else 2)
+        ax.axhline(stc_w_init, color="gray", ls=":", lw=1.2, label=f"w_init")
+        ax.legend(fontsize=7)
+
+        fig8.tight_layout()
+        _maybe_save(fig8, f"{args.save_prefix}_fig8_consolidation_index.png" if args.save_prefix else None)
+
+    # ------------------------------------------------------------------
     # Show / done
     # ------------------------------------------------------------------
     if args.show or not args.save_prefix:

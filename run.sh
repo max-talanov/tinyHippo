@@ -9,11 +9,16 @@
 #SBATCH --partition=gp_bsccs
 
 # Scale and consolidation options
-# sbatch --export=ALL,SCALE=12,N_SWR=7 run.sh
+# Normal run:
+#   sbatch --export=ALL,SCALE=12,N_SWR=7 run.sh
+# Phase 5 falsification (block L-LTP, confirm replay persists):
+#   sbatch --export=ALL,SCALE=12,N_SWR=7,PRP_THRESHOLD=999 run.sh
 SCALE=${SCALE:-12}
 EC_LII_K=${EC_LII_K:-50}
-N_SWR=${N_SWR:-7}          # number of SWR epochs for consolidation
-EPOCH_MS=${EPOCH_MS:-1000}  # duration of each epoch in ms
+N_SWR=${N_SWR:-7}             # number of SWR epochs for consolidation
+EPOCH_MS=${EPOCH_MS:-1000}    # duration of each epoch in ms
+PRP_THRESHOLD=${PRP_THRESHOLD:-3.0}   # SWR events needed for L-LTP capture
+                                       # set to 999 for Phase 5 falsification
 OUTDIR="results"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -28,7 +33,7 @@ export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 
 echo "[Slurm] job=$SLURM_JOB_ID  ntasks=$SLURM_NTASKS  cpus-per-task=$SLURM_CPUS_PER_TASK"
-echo "[Slurm] scale=${SCALE}%  ec_lii_k=$EC_LII_K  n_swr=$N_SWR  epoch_ms=$EPOCH_MS"
+echo "[Slurm] scale=${SCALE}%  ec_lii_k=$EC_LII_K  n_swr=$N_SWR  epoch_ms=$EPOCH_MS  prp_threshold=$PRP_THRESHOLD"
 
 python3 - <<'PY'
 import nest
@@ -40,14 +45,23 @@ PY
 
 mkdir -p "$OUTDIR"
 
+# Derive output filename: tag Phase 5 runs to distinguish from normal runs
+if python3 -c "import sys; sys.exit(0 if float('${PRP_THRESHOLD}') > 100 else 1)" 2>/dev/null; then
+    OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc_ph5_block.h5"
+    echo "[Slurm] PHASE 5 FALSIFICATION RUN — L-LTP blocked (PRP_threshold=${PRP_THRESHOLD})"
+else
+    OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc.h5"
+fi
+
 srun --cpu-bind=cores \
   python3 -u "replay_scaled.py" \
-    --scale      "$SCALE" \
-    --threads    "$SLURM_CPUS_PER_TASK" \
-    --out-hdf5   "${OUTDIR}/replay_${SCALE}pct_stc.h5" \
+    --scale         "$SCALE" \
+    --threads       "$SLURM_CPUS_PER_TASK" \
+    --out-hdf5      "$OUTFILE" \
     --ec-lii \
-    --ec-lii-k   "$EC_LII_K" \
+    --ec-lii-k      "$EC_LII_K" \
     --stc \
-    --n-swr      "$N_SWR" \
-    --epoch-ms   "$EPOCH_MS" \
+    --n-swr         "$N_SWR" \
+    --epoch-ms      "$EPOCH_MS" \
+    --prp-threshold "$PRP_THRESHOLD" \
     --no-figures

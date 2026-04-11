@@ -1081,17 +1081,18 @@ class STCHook:
     n_calls      int               — number of SWR events processed so far
     history      list[dict]        — per-event summary (for HDF5 export)
     """
-    conns       : object             # nest.SynapseCollection
-    w           : np.ndarray         # [n_syn] float32
-    tag         : np.ndarray         # [n_syn] float32
-    tag_time_ms : np.ndarray         # [n_syn] float32
-    prp_pool    : np.ndarray         # [n_ec]  float32
-    ltp_done    : np.ndarray         # [n_syn] bool
-    post_idx    : np.ndarray         # [n_syn] int32  (EC neuron index for PRP)
-    pre_ids     : np.ndarray         # [n_syn] int64  — source GIDs (cached at build)
-    post_ids_g  : np.ndarray         # [n_syn] int64  — target GIDs (cached at build)
-    n_calls     : int = 0
-    history     : list = None
+    conns         : object             # nest.SynapseCollection
+    w             : np.ndarray         # [n_syn] float32
+    tag           : np.ndarray         # [n_syn] float32
+    tag_time_ms   : np.ndarray         # [n_syn] float32
+    prp_pool      : np.ndarray         # [n_ec]  float32  — per-EC-neuron PRP (units: SWR events)
+    ltp_done      : np.ndarray         # [n_syn] bool
+    post_idx      : np.ndarray         # [n_syn] int32  (EC neuron index for PRP)
+    pre_ids       : np.ndarray         # [n_syn] int64  — source GIDs (cached at build)
+    post_ids_g    : np.ndarray         # [n_syn] int64  — target GIDs (cached at build)
+    ec_gids       : np.ndarray         # [n_ec]  int64  — EC neuron GIDs (for PRP lookup)
+    n_calls       : int = 0
+    history       : list = None
 
     def __post_init__(self):
         if self.history is None:
@@ -1142,6 +1143,7 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
         post_idx    = post_idx,
         pre_ids     = pre_ids_arr,
         post_ids_g  = post_ids_arr,
+        ec_gids     = ec_ids,
     )
 
 
@@ -1156,10 +1158,20 @@ def run_stc_hook(
     A_plus      : float = 0.01,   # LTP magnitude per coincidence
     A_minus     : float = 0.008,  # LTD magnitude per coincidence
     delay_ms    : float = 3.0,    # CA1→EC axonal delay (ms)
+    # Tagging threshold: min |Δw| to set a synaptic tag.
+    # A_plus * exp(-dt/tau_plus) > tag_threshold  ⟺  dt < tau_plus * ln(A_plus/tag_threshold)
+    # Default 0.005 → dt must be within ~29 ms of the STDP window centre.
+    # With high background firing, a stricter threshold prevents spurious tagging
+    # of non-coincident pairs that happen to fire within the 120 ms SWR window.
+    tag_threshold : float = 0.003,
     # Tag parameters
     tau_tag_ms  : float = 2000.0, # tag decay time constant (sim ms)
     # PRP / L-LTP parameters
-    PRP_threshold : float = 3.0,  # SWR activations needed to produce PRP
+    # PRP is now counted in *discrete SWR events* per EC neuron (not Δw sum).
+    # One unit is added each time an EC neuron fires during a SWR window.
+    # PRP_threshold = minimum number of SWR activations needed to produce PRP
+    # and capture tagged synapses to L-LTP.
+    PRP_threshold : float = 3.0,  # SWR events needed (biologically: ~3-4 bursts)
     w_max         : float = 1.5,  # max weight after L-LTP capture
     w_min         : float = 0.1,  # min weight after LTD
 ) -> dict:
@@ -1171,8 +1183,12 @@ def run_stc_hook(
     1. Read current CA1 and EC spike times from NEST recorders.
     2. For each CA1→EC synapse, find coincident (pre, post) pairs within
        the SWR window and compute STDP Δw using nearest-neighbour pairing.
+       Only synapses where |Δw| ≥ tag_threshold are tagged (prevents
+       spurious tagging of temporally distant pairs in high-rate networks).
     3. Decay existing tags, then refresh/set tags for updated synapses.
-    4. Accumulate PRP pool per EC neuron.
+    4. Accumulate PRP pool per EC neuron: +1 per SWR event the EC neuron fired
+       (biologically: PRP synthesis driven by postsynaptic activation, not
+       individual synapse weight).
     5. Apply L-LTP capture where PRP ≥ threshold AND tag alive.
     6. Write updated weights back to NEST via SetStatus.
     7. Return a summary dict appended to stc.history.
@@ -1236,16 +1252,27 @@ def run_stc_hook(
     decay_factor = np.exp(-np.clip(dt_since_tag, 0, 1e6) / tau_tag_ms)
     stc.tag *= decay_factor
 
-    # Set/refresh tag on synapses with STDP activity this event
-    active = np.abs(delta_w) > 1e-6
+    # Set/refresh tag ONLY for synapses with meaningful STDP coincidence.
+    # tag_threshold filters out spurious low-amplitude delta_w from
+    # temporally distant pairs that happen to both fire in the long SWR window.
+    active = np.abs(delta_w) >= tag_threshold
     stc.tag[active]         = np.abs(delta_w[active])
     stc.tag_time_ms[active] = current_t_ms
 
-    # ---- 4. PRP pool per EC neuron -------------------------------------------
-    # Each SWR activation that sets a tag contributes to PRP of post neuron
-    np.add.at(stc.prp_pool,
-               stc.post_idx[active],
-               np.abs(delta_w[active]))
+    # ---- 4. PRP pool per EC neuron (event-count model) ----------------------
+    # PRP is synthesised in the EC soma when the cell fires during a SWR.
+    # Each SWR event in which a given EC neuron fires contributes +1 to its
+    # PRP pool — independent of individual synapse weights.
+    # This is biologically grounded (Frey & Morris 1997): PRP is a 'neuron-
+    # level' signal triggered by strong post-synaptic activation, not a
+    # weighted sum of individual EPSP tags.
+    if len(ec_s) > 0:
+        # Which EC neuron indices fired in this SWR window?
+        ec_fired_gids  = np.unique(ec_s)
+        fired_syn_mask = np.isin(stc.post_ids_g, ec_fired_gids)
+        ec_fired_idx   = np.unique(stc.post_idx[fired_syn_mask])
+        stc.prp_pool[ec_fired_idx] += 1.0
+    n_ec_fired = int(len(np.unique(ec_s))) if len(ec_s) > 0 else 0
 
     # ---- 5. E-LTP (immediate) and L-LTP capture (threshold-gated) -----------
     # E-LTP: apply Δw immediately (reversible, will decay without L-LTP)
@@ -1265,10 +1292,13 @@ def run_stc_hook(
 
     # ---- 7. Summary ----------------------------------------------------------
     n_active     = int(active.sum())
+    n_tagged_syn = int((stc.tag > 1e-4).sum())
     n_ltp_new    = int(new_capture.sum())
     n_ltp_total  = int(stc.ltp_done.sum())
     w_mean       = float(stc.w.mean())
     w_ltp_mean   = float(stc.w[stc.ltp_done].mean()) if n_ltp_total > 0 else float('nan')
+    prp_mean     = float(stc.prp_pool.mean())
+    prp_max      = float(stc.prp_pool.max())
     dt_hook      = time.perf_counter() - t_hook
 
     summary = dict(
@@ -1276,6 +1306,10 @@ def run_stc_hook(
         t_swr_start  = t_swr_start,
         t_swr_end    = t_swr_end,
         n_active_syn = n_active,
+        n_tagged_syn = n_tagged_syn,
+        n_ec_fired   = n_ec_fired,
+        prp_mean     = prp_mean,
+        prp_max      = prp_max,
         n_ltp_new    = n_ltp_new,
         n_ltp_total  = n_ltp_total,
         w_mean       = w_mean,
@@ -1284,9 +1318,10 @@ def run_stc_hook(
     )
     stc.history.append(summary)
 
-    print(f"  [STCHook] event={stc.n_calls}  "
-          f"active={n_active:,}  L-LTP_new={n_ltp_new:,}  "
-          f"L-LTP_total={n_ltp_total:,}  "
+    print(f"  [STCHook] event={stc.n_calls:2d}  "
+          f"tagged={n_active:,}  EC_fired={n_ec_fired:,}  "
+          f"PRP_mean={prp_mean:.2f}/{PRP_threshold:.0f}  "
+          f"L-LTP_new={n_ltp_new:,}  L-LTP_total={n_ltp_total:,}  "
           f"w_mean={w_mean:.4f}  ({dt_hook:.2f}s)")
     return summary
 
@@ -1674,15 +1709,26 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             stc_grp.create_dataset("t_swr_start",  data=np.array([h["t_swr_start"]  for h in hist], dtype=np.float32))
             stc_grp.create_dataset("t_swr_end",    data=np.array([h["t_swr_end"]    for h in hist], dtype=np.float32))
             stc_grp.create_dataset("n_active_syn", data=np.array([h["n_active_syn"] for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_tagged_syn", data=np.array([h.get("n_tagged_syn", h["n_active_syn"]) for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_ec_fired",   data=np.array([h.get("n_ec_fired", 0)  for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("prp_mean",     data=np.array([h.get("prp_mean", 0.0)  for h in hist], dtype=np.float32))
+            stc_grp.create_dataset("prp_max",      data=np.array([h.get("prp_max",  0.0)  for h in hist], dtype=np.float32))
             stc_grp.create_dataset("n_ltp_new",    data=np.array([h["n_ltp_new"]    for h in hist], dtype=np.int32))
             stc_grp.create_dataset("n_ltp_total",  data=np.array([h["n_ltp_total"]  for h in hist], dtype=np.int32))
             stc_grp.create_dataset("w_mean",       data=np.array([h["w_mean"]       for h in hist], dtype=np.float32))
             stc_grp.create_dataset("w_ltp_mean",   data=np.array([h["w_ltp_mean"]   for h in hist], dtype=np.float32))
-            # Final weight distribution snapshot
-            stc_grp.create_dataset("w_final",      data=stc_hook.w.astype(np.float32), **compress)
-            stc_grp.create_dataset("ltp_mask",     data=stc_hook.ltp_done.astype(np.uint8), **compress)
-            stc_grp.attrs["n_swr_events"] = stc_hook.n_calls
-            stc_grp.attrs["w_init"]       = ec_module.w_init
+            # Final weight distribution + L-LTP mask
+            stc_grp.create_dataset("w_final",      data=stc_hook.w.astype(np.float32),           **compress)
+            stc_grp.create_dataset("ltp_mask",     data=stc_hook.ltp_done.astype(np.uint8),      **compress)
+            # PRP pool + tag snapshots (for tag occupancy map figure)
+            stc_grp.create_dataset("prp_pool_final", data=stc_hook.prp_pool.astype(np.float32),  **compress)
+            stc_grp.create_dataset("tag_final",    data=stc_hook.tag.astype(np.float32),          **compress)
+            # Per-synapse EC neuron index (for tag occupancy grouping)
+            stc_grp.create_dataset("post_idx",     data=stc_hook.post_idx.astype(np.int32),       **compress)
+            stc_grp.attrs["n_swr_events"]  = stc_hook.n_calls
+            stc_grp.attrs["w_init"]        = ec_module.w_init
+            stc_grp.attrs["n_ec_neurons"]  = ec_module.N
+            stc_grp.attrs["n_synapses"]    = len(stc_hook.w)
             print(f"  [HDF5] STC history: {stc_hook.n_calls} events, "
                   f"{int(stc_hook.ltp_done.sum()):,} L-LTP synapses")
 
@@ -1759,6 +1805,11 @@ Cortical module:
         "--epoch-ms", type=float, default=1000.0, metavar="MS",
         help="Duration of each SWR epoch in ms (default: 1000). "
              "The SWR events are placed at fixed offsets within each epoch.")
+    parser.add_argument(
+        "--prp-threshold", type=float, default=3.0, metavar="T",
+        help="PRP pool threshold for L-LTP capture (default: 3.0 = 3 SWR events). "
+             "Set to 999 for Phase 5 falsification experiment (blocks L-LTP while "
+             "preserving E-LTP and tagging, isolating replay from consolidation).")
     args = parser.parse_args()
 
     if args.stc and not args.ec_lii:
@@ -1785,7 +1836,7 @@ Cortical module:
     total_sim_ms = SIM_MS * n_epochs
 
     print(f"\n{'='*72}")
-    print(f"  Watson et al. 2025 — Bidirectional Replay  [v5: STC Phase 2]")
+    print(f"  Watson et al. 2025 — Bidirectional Replay  [v6: STC Phase 2 fixes + Phase 5 prep]")
     print(f"  Scale    : {cfg['label']}")
     print(f"  CA3_SUP  : {cfg['N_ca3_sup']:>10,}  CA3_DEEP : {cfg['N_ca3_deep']:>8,}")
     print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {n_groups:>8,}  "
@@ -1796,7 +1847,9 @@ Cortical module:
               f"K={args.ec_lii_k}  [--ec-lii]")
     if args.stc:
         print(f"  STC hook : ENABLED  n_swr={n_epochs}  "
-              f"epoch={SIM_MS:.0f} ms  total={total_sim_ms:.0f} ms  [--stc]")
+              f"epoch={SIM_MS:.0f} ms  total={total_sim_ms:.0f} ms  [--stc]  "
+              f"PRP_threshold={args.prp_threshold}"
+              + ("  [PHASE-5 FALSIFICATION: L-LTP blocked]" if args.prp_threshold > 100 else ""))
     print(f"  Threads  : {n_threads}  |  Sim: {total_sim_ms:.0f} ms")
     print(f"  Connect  : fixed_indegree + pairwise_bernoulli (C++, OpenMP)")
     print(f"{'='*72}\n")
@@ -1850,16 +1903,18 @@ Cortical module:
             # Run STC hook for the forward SWR event in this epoch
             run_stc_hook(
                 stc_hook, ec_module,
-                t_swr_start = epoch_t0 + swr_fwd[0],
-                t_swr_end   = epoch_t0 + swr_fwd[1],
-                current_t_ms= current_t,
+                t_swr_start   = epoch_t0 + swr_fwd[0],
+                t_swr_end     = epoch_t0 + swr_fwd[1],
+                current_t_ms  = current_t,
+                PRP_threshold = args.prp_threshold,
             )
             # Run STC hook for the reverse SWR event
             run_stc_hook(
                 stc_hook, ec_module,
-                t_swr_start = epoch_t0 + swr_rev[0],
-                t_swr_end   = epoch_t0 + swr_rev[1],
-                current_t_ms= current_t,
+                t_swr_start   = epoch_t0 + swr_rev[0],
+                t_swr_end     = epoch_t0 + swr_rev[1],
+                current_t_ms  = current_t,
+                PRP_threshold = args.prp_threshold,
             )
 
         if n_epochs > 1:
