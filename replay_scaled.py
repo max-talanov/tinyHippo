@@ -503,11 +503,18 @@ def build_replay_network(
     # Replay trigger
     trigger_dur_ms=16.0, trigger_rate=2600.0, trigger_weight=0.95,
     # Staggered scaffold
-    scaffold_on=True, scaffold_step_ms=8.0,
+    # scaffold_step_ms=None → auto: fit n_seq_groups steps inside 90% of SWR window
+    # With 35 groups and 120 ms window: step = 120*0.90/35 ≈ 3.1 ms
+    # Previous default of 8 ms gave 35×8=280 ms >> 120 ms → groups 15-34
+    # never received scaffold, making the second half of each replay fail.
+    scaffold_on=True, scaffold_step_ms=None,
     scaffold_rate=720.0, scaffold_weight=0.55,
     # Background drive rates [Hz]
     # Watson UPDATE-2: SUP receives ~3.4x stronger DG/EC input than DEEP
-    rate_ec_ca1_pyr=200.0,         # reduced from 580 Hz (bio: ~200 Hz EC III input)
+    rate_ec_ca1_pyr=70.0,          # reduced 200→70 Hz: CA1 target ~10 Hz baseline.
+                                    # At 200 Hz CA1 fired at 39.7 Hz (4× bio target),
+                                    # causing every EC neuron to fire in every SWR
+                                    # window → non-selective PRP → mass L-LTP at event 3.
     rate_dg_ca3_sup=820.0,  rate_dg_ca3_deep=220.0,
     rate_ec_ca3_sup=530.0,  rate_ec_ca3_deep=150.0,
     rate_ca3_drive_sup=400.0, rate_ca3_drive_deep=120.0,
@@ -516,7 +523,10 @@ def build_replay_network(
     # Theta
     theta_on=True, theta_hz=8.0, theta_mean=1100.0, theta_amp=1000.0,
     # Synaptic weights (mV; fixed across scales — synapse count scales instead)
-    w_seq_fwd=1.50,  w_seq_bwd=0.30,  w_sup_local=0.90,
+    # w_seq_bwd raised 0.30→0.70: the backward chain must self-sustain reverse
+    # replay until STDP asymmetry takes over.  w_fwd/w_bwd ≈ 2.1 still gives
+    # a clear forward bias; STDP will sharpen it epoch-by-epoch (Frey & Morris).
+    w_seq_fwd=1.50,  w_seq_bwd=0.70,  w_sup_local=0.90,
     w_sup_to_deep=1.30, w_deep_local=0.85, w_deep_fwd=0.70, w_deep_to_sup=0.20,
     # Schaffer collateral weights (mV per synapse)
     # Bio: single Schaffer EPSP ~0.1-0.3 mV (Andersen 2007).
@@ -763,6 +773,15 @@ def build_replay_network(
 
     # ---- Replay triggers and scaffold ---------------------------------------
     print("  Connecting replay triggers and scaffold...")
+
+    # Auto-compute scaffold step so ALL n_seq_groups fit within the SWR window.
+    # We use 85% of the window so the last group still fires 15% before window end,
+    # leaving time for Schaffer → CA1 propagation.
+    if scaffold_step_ms is None:
+        scaffold_step_ms = (swr_fwd_stop - swr_fwd_start) * 0.85 / n_seq_groups
+    print(f"    scaffold_step_ms={scaffold_step_ms:.2f}  "
+          f"(total span = {scaffold_step_ms * n_seq_groups:.1f} ms, "
+          f"SWR window = {swr_fwd_stop - swr_fwd_start:.0f} ms)")
     make_replay_trigger(ca3_sup_groups[0],  swr_fwd_start,
                         trigger_dur_ms=trigger_dur_ms,
                         trigger_rate=trigger_rate, weight=trigger_weight)
@@ -928,7 +947,11 @@ def build_ec_lii(
     K_ca1_ec     : int   = 50,
     w_ca1_ec     : float = 1.0,
     delay_ca1_ec : float = 3.0,   # axonal conduction delay CA1→EC [ms]
-    rate_bg      : float = 200.0, # tonic background Poisson drive [Hz]
+    rate_bg      : float = 80.0,  # tonic background Poisson drive [Hz].
+                                  # Reduced 200→80 Hz: at 200 Hz EC fired at 30 Hz
+                                  # (2-6× bio target of 5-15 Hz), causing every EC
+                                  # neuron to fire in every SWR window → non-selective
+                                  # PRP accumulation.  Target: EC baseline ~8 Hz.
     w_bg         : float = 1.5,
 ) -> ECModule:
     """
@@ -1160,10 +1183,9 @@ def run_stc_hook(
     delay_ms    : float = 3.0,    # CA1→EC axonal delay (ms)
     # Tagging threshold: min |Δw| to set a synaptic tag.
     # A_plus * exp(-dt/tau_plus) > tag_threshold  ⟺  dt < tau_plus * ln(A_plus/tag_threshold)
-    # Default 0.005 → dt must be within ~29 ms of the STDP window centre.
-    # With high background firing, a stricter threshold prevents spurious tagging
-    # of non-coincident pairs that happen to fire within the 120 ms SWR window.
-    tag_threshold : float = 0.003,
+    # With CA1 at ~10 Hz (v7), coincidences within 120 ms SWR window are far more
+    # selective.  Default 0.005 → dt must be within ~28 ms of ideal Δt.
+    tag_threshold : float = 0.005,
     # Tag parameters
     tau_tag_ms  : float = 2000.0, # tag decay time constant (sim ms)
     # PRP / L-LTP parameters
@@ -1836,7 +1858,7 @@ Cortical module:
     total_sim_ms = SIM_MS * n_epochs
 
     print(f"\n{'='*72}")
-    print(f"  Watson et al. 2025 — Bidirectional Replay  [v6: STC Phase 2 fixes + Phase 5 prep]")
+    print(f"  Watson et al. 2025 — Bidirectional Replay  [v7: replay + consolidation fixes]")
     print(f"  Scale    : {cfg['label']}")
     print(f"  CA3_SUP  : {cfg['N_ca3_sup']:>10,}  CA3_DEEP : {cfg['N_ca3_deep']:>8,}")
     print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {n_groups:>8,}  "

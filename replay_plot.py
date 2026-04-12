@@ -272,28 +272,188 @@ def main():
     _maybe_save(fig, f"{args.save_prefix}_fig1_overview.png" if args.save_prefix else None)
 
     # ------------------------------------------------------------------
-    # Fig 2 — CA3 SUP sequence heatmap
+    # Fig 2 — CA3 SUP sequence heatmap — zoomed SWR windows
+    # Layout:
+    #   Row 0: full 7000 ms overview  [5 ms bins]  — context
+    #   Row 1: epoch 1 SWR-1 forward  [2 ms bins]  — zoom + ρ scatter
+    #   Row 2: epoch 1 SWR-2 reverse  [2 ms bins]  — zoom + ρ scatter
+    #
+    # The 5 ms bins in the overview are narrow enough to show individual
+    # SWR bursts as vertical columns; the 2 ms zoom panels resolve the
+    # inter-group temporal offset (~3-8 ms per step) that constitutes replay.
     # ------------------------------------------------------------------
-    fig2, ax2 = plt.subplots(figsize=(14, 5))
-    im = ax2.imshow(
-        heatmap_sup, aspect="auto", origin="lower",
+
+    cmap_seq2    = plt.cm.viridis
+    group_colors2 = [cmap_seq2(k / max(n_groups - 1, 1)) for k in range(n_groups)]
+
+    def _zoom_heatmap(ax_heat, ax_scatter, t_spk, s_spk, grp_ids,
+                      t0, t1, pad_ms=20.0, bin_ms=2.0,
+                      title_heat="", title_scat="", expected_sign=+1):
+        """
+        Left panel : 2ms-bin heatmap inside [t0-pad, t1+pad].
+        Right panel: per-group mean spike time scatter with linear fit and ρ.
+        Returns (im, rho, pval).
+        """
+        tw0, tw1 = t0 - pad_ms, t1 + pad_ms
+        edges_z  = np.arange(tw0, tw1 + bin_ms, bin_ms)
+        n_bins_z = len(edges_z) - 1
+        ng       = len(grp_ids)
+
+        mask  = (t_spk >= tw0) & (t_spk <= tw1)
+        t_w   = t_spk[mask];  s_w = s_spk[mask]
+
+        heat_z  = np.zeros((ng, n_bins_z), dtype=np.float32)
+        gidx_sc, gmean_sc = [], []
+
+        for k in range(ng):
+            m   = np.isin(s_w, grp_ids[k])
+            t_g = t_w[m]
+            cnt, _ = np.histogram(t_g, bins=edges_z)
+            gs_n   = grp_ids.shape[1]
+            heat_z[k] = cnt / (bin_ms / 1e3) / max(gs_n, 1)
+            if len(t_g) >= 3:
+                gidx_sc.append(k)
+                gmean_sc.append(float(t_g.mean()))
+
+        # ---- heatmap ----
+        vmax = max(heat_z.max(), 1.0)
+        im = ax_heat.imshow(
+            heat_z, aspect="auto", origin="lower",
+            extent=[edges_z[0], edges_z[-1], -0.5, ng - 0.5],
+            cmap="inferno", interpolation="nearest", vmin=0, vmax=vmax)
+        ax_heat.axvline(t0, color="cyan",  lw=1.2, ls="--", alpha=0.8, label="SWR start")
+        ax_heat.axvline(t1, color="cyan",  lw=1.2, ls="--", alpha=0.8, label="SWR end")
+        ax_heat.axvspan(t0, t1, color="white", alpha=0.08)
+        ax_heat.set_xlim(edges_z[0], edges_z[-1])
+        ax_heat.set_xlabel("Time (ms)", fontsize=8)
+        ax_heat.set_ylabel("Seq group #", fontsize=8)
+        ax_heat.set_title(title_heat, fontsize=9, loc="left")
+        ax_heat.tick_params(labelsize=7)
+
+        rho, pval = np.nan, np.nan
+
+        # ---- scatter + fit ----
+        if len(gidx_sc) >= 5:
+            gi  = np.array(gidx_sc);  gm = np.array(gmean_sc)
+            try:
+                from scipy.stats import spearmanr, linregress
+                rho, pval = spearmanr(gi, gm)
+                slope, intercept, _, _, _ = linregress(gm, gi)
+                tl = np.linspace(gm.min() - 2, gm.max() + 2, 200)
+                ax_scatter.plot(tl, slope * tl + intercept, "--",
+                                color="tomato" if expected_sign < 0 else "royalblue",
+                                lw=1.8, alpha=0.85)
+            except Exception:
+                pass
+
+            colors_sc = [group_colors2[k] for k in gi]
+            ax_scatter.scatter(gm, gi, c=colors_sc, s=55, edgecolors="k",
+                               linewidths=0.4, zorder=4)
+
+            # Overlay mean spike times on the heatmap as dots
+            ax_heat.scatter(gm, gi, c=colors_sc, s=18, edgecolors="white",
+                            linewidths=0.4, zorder=5)
+
+            sign_ok = (expected_sign > 0 and rho > 0.5) or (expected_sign < 0 and rho < -0.5)
+            verdict = "✓ PASS" if sign_ok else ("WEAK" if abs(rho) > 0.2 else "✗ FAIL")
+            ax_scatter.set_title(
+                f"{title_scat}\nρ = {rho:+.3f}  p = {pval:.3f}  [{verdict}]",
+                fontsize=9, loc="left")
+        else:
+            ax_scatter.set_title(f"{title_scat}\n(insufficient spikes)", fontsize=9, loc="left")
+
+        ax_scatter.axvspan(t0, t1, color="gold", alpha=0.18, label="SWR window")
+        ax_scatter.set_xlim(edges_z[0], edges_z[-1])
+        ax_scatter.set_ylim(-1, ng)
+        ax_scatter.set_yticks(range(0, ng, max(1, ng // 8)))
+        ax_scatter.set_xlabel("Mean spike time (ms)", fontsize=8)
+        ax_scatter.set_ylabel("Seq group #", fontsize=8)
+        ax_scatter.tick_params(labelsize=7)
+        ax_scatter.legend(fontsize=7, loc="upper right")
+        return im, rho, pval
+
+    # Re-load raw spikes from HDF5 for the 2 ms recomputation
+    with h5py.File(args.inp, "r") as h5:
+        t_sup2   = np.array(h5["ca3_sup"]["spk_times"],   dtype=np.float64)
+        s_sup2   = np.array(h5["ca3_sup"]["spk_senders"], dtype=np.int64)
+        grp_sup2 = np.array(h5["ca3_sup"]["group_ids"],   dtype=np.int64)  # [n_groups, gs]
+
+    # Build 5ms overview heatmap from raw spikes
+    ov_bin  = 5.0
+    ov_edge = np.arange(0.0, sim_ms + ov_bin, ov_bin)
+    ov_nbin = len(ov_edge) - 1
+    gs_sup2 = grp_sup2.shape[1]
+    heat_ov = np.zeros((n_groups, ov_nbin), dtype=np.float32)
+    for k in range(n_groups):
+        m = np.isin(s_sup2, grp_sup2[k])
+        cnt, _ = np.histogram(t_sup2[m], bins=ov_edge)
+        heat_ov[k] = cnt / (ov_bin / 1e3) / max(gs_sup2, 1)
+
+    # Build figure with gridspec
+    # Row heights: overview 1, fwd zoom pair 2, rev zoom pair 2
+    fig2 = plt.figure(figsize=(18, 14))
+    fig2.suptitle(
+        f"CA3 SUP Sequence Replay — Zoomed SWR Windows  [{scale}]",
+        fontsize=13, fontweight="bold")
+    gs2 = fig2.add_gridspec(3, 4, height_ratios=[1, 2, 2],
+                             hspace=0.42, wspace=0.32)
+
+    # ---- Row 0: full overview (span all 4 cols) ----
+    ax_ov2 = fig2.add_subplot(gs2[0, :])
+    im_ov  = ax_ov2.imshow(
+        heat_ov, aspect="auto", origin="lower",
         extent=[0, sim_ms, -0.5, n_groups - 0.5],
-        cmap="inferno", interpolation="nearest",
-    )
-    fig2.colorbar(im, ax=ax2, pad=0.02).set_label("Rate (Hz)", fontsize=9)
-    ax2.axvspan(*swr_fwd, color="white", alpha=0.20, label="SWR-1 fwd")
-    ax2.axvspan(*swr_rev, color="cyan",  alpha=0.15, label="SWR-2 rev")
-    fwd_dur = swr_fwd[1] - swr_fwd[0]
-    rev_dur = swr_rev[1] - swr_rev[0]
-    ax2.plot([swr_fwd[0], swr_fwd[0] + fwd_dur * 0.75], [0, n_groups - 1],
-             "--w", lw=1.8, alpha=0.9, label="Fwd slope")
-    ax2.plot([swr_rev[0], swr_rev[0] + rev_dur * 0.75], [n_groups - 1, 0],
-             "--c", lw=1.8, alpha=0.9, label="Rev slope")
-    ax2.set_xlabel("Time (ms)", fontsize=10)
-    ax2.set_ylabel("Sequence group #", fontsize=10)
-    ax2.set_title(f"CA3 SUP Sequence Group Heatmap  [{scale}]", fontsize=11)
-    ax2.legend(fontsize=8, loc="upper right")
-    fig2.tight_layout()
+        cmap="inferno", interpolation="nearest")
+    fig2.colorbar(im_ov, ax=ax_ov2, fraction=0.015).set_label("Rate (Hz)", fontsize=8)
+    # Mark every SWR window across all epochs
+    for ep in range(7):
+        ax_ov2.axvspan(swr_fwd[0] + ep * 1000, swr_fwd[1] + ep * 1000,
+                       color="white", alpha=0.22)
+        ax_ov2.axvspan(swr_rev[0] + ep * 1000, swr_rev[1] + ep * 1000,
+                       color="cyan",  alpha=0.15)
+    ax_ov2.set_xlabel("Time (ms)", fontsize=9)
+    ax_ov2.set_ylabel("Seq group #", fontsize=9)
+    ax_ov2.set_title(
+        "A  Full simulation — CA3 SUP  [5 ms bins]  "
+        "│  white = SWR-1 fwd windows   cyan = SWR-2 rev windows",
+        fontsize=9, loc="left")
+    sm2 = ScalarMappable(cmap=cmap_seq2, norm=Normalize(0, n_groups - 1))
+    sm2.set_array([])
+
+    # ---- Rows 1-2: zoom panels — heatmap (left pair) + scatter (right pair) ----
+    # Epoch 1 forward
+    ax_h1f = fig2.add_subplot(gs2[1, 0:2])
+    ax_s1f = fig2.add_subplot(gs2[1, 2:4])
+    im1f, rho1f, pval1f = _zoom_heatmap(
+        ax_h1f, ax_s1f,
+        t_sup2, s_sup2, grp_sup2,
+        swr_fwd[0], swr_fwd[1], pad_ms=15.0, bin_ms=2.0,
+        title_heat="B  SWR-1 forward  [2 ms bins, epoch 1]  ←  group 0 seed",
+        title_scat="C  Per-group mean time — SWR-1 fwd\n   (positive slope = ✓ forward order)",
+        expected_sign=+1)
+    fig2.colorbar(im1f, ax=ax_h1f, fraction=0.02).set_label("Hz", fontsize=7)
+
+    # Epoch 1 reverse
+    ax_h1r = fig2.add_subplot(gs2[2, 0:2])
+    ax_s1r = fig2.add_subplot(gs2[2, 2:4])
+    im1r, rho1r, pval1r = _zoom_heatmap(
+        ax_h1r, ax_s1r,
+        t_sup2, s_sup2, grp_sup2,
+        swr_rev[0], swr_rev[1], pad_ms=15.0, bin_ms=2.0,
+        title_heat="D  SWR-2 reverse  [2 ms bins, epoch 1]  ←  group N-1 seed",
+        title_scat="E  Per-group mean time — SWR-2 rev\n   (negative slope = ✓ reverse order)",
+        expected_sign=-1)
+    fig2.colorbar(im1r, ax=ax_h1r, fraction=0.02).set_label("Hz", fontsize=7)
+
+    # Add colorbar legend for group colours on the scatter panels
+    for ax_s in (ax_s1f, ax_s1r):
+        cbar_s = fig2.colorbar(
+            ScalarMappable(cmap=cmap_seq2, norm=Normalize(0, n_groups - 1)),
+            ax=ax_s, fraction=0.03, pad=0.02)
+        cbar_s.set_label("Seq group #", fontsize=7)
+        cbar_s.ax.tick_params(labelsize=6)
+
+    fig2.subplots_adjust(top=0.93)
     _maybe_save(fig2, f"{args.save_prefix}_fig2_heatmap.png" if args.save_prefix else None)
 
     # ------------------------------------------------------------------
