@@ -471,7 +471,8 @@ def make_staggered_replay_drive(seq_groups, swr_start_ms, direction="forward",
     order = list(range(n)) if direction == "forward" else list(range(n-1, -1, -1))
     all_gens = []
     for step, k in enumerate(order):
-        t0  = swr_start_ms + step * inter_step_ms
+        # Round to 0.1 ms resolution — NEST BadProperty if not a multiple
+        t0  = round(swr_start_ms + step * inter_step_ms, 1)
         ids = [int(i) for i in seq_groups[k]]
         gens = nest.Create("poisson_generator", len(ids), params={
             "rate": float(drive_rate), "start": float(t0),
@@ -778,8 +779,11 @@ def build_replay_network(
     # We use 85% of the window so the last group still fires 15% before window end,
     # leaving time for Schaffer → CA1 propagation.
     if scaffold_step_ms is None:
-        scaffold_step_ms = (swr_fwd_stop - swr_fwd_start) * 0.85 / n_seq_groups
-    print(f"    scaffold_step_ms={scaffold_step_ms:.2f}  "
+        raw_step = (swr_fwd_stop - swr_fwd_start) * 0.85 / n_seq_groups
+        # Round to nearest 0.1 ms: NEST requires start times to be exact
+        # multiples of the resolution.  120*0.85/35 = 2.9142... fails.
+        scaffold_step_ms = round(raw_step, 1)
+    print(f"    scaffold_step_ms={scaffold_step_ms:.1f}  "
           f"(total span = {scaffold_step_ms * n_seq_groups:.1f} ms, "
           f"SWR window = {swr_fwd_stop - swr_fwd_start:.0f} ms)")
     make_replay_trigger(ca3_sup_groups[0],  swr_fwd_start,
