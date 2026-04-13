@@ -288,10 +288,13 @@ def main():
 
     def _zoom_heatmap(ax_heat, ax_scatter, t_spk, s_spk, grp_ids,
                       t0, t1, pad_ms=20.0, bin_ms=2.0,
-                      title_heat="", title_scat="", expected_sign=+1):
+                      title_heat="", title_scat="", expected_sign=+1,
+                      baseline_rate_per_group=None):
         """
-        Left panel : 2ms-bin heatmap inside [t0-pad, t1+pad].
-        Right panel: per-group mean spike time scatter with linear fit and ρ.
+        Left panel : baseline-subtracted 2ms-bin heatmap inside [t0-pad, t1+pad].
+          Showing *excess* firing rate (rate − baseline) with a diverging colormap
+          makes the sequential diagonal visible even against background theta activity.
+        Right panel: per-group mean spike time scatter with Spearman ρ annotation.
         Returns (im, rho, pval).
         """
         tw0, tw1 = t0 - pad_ms, t1 + pad_ms
@@ -304,63 +307,101 @@ def main():
 
         heat_z  = np.zeros((ng, n_bins_z), dtype=np.float32)
         gidx_sc, gmean_sc = [], []
+        gs_n = grp_ids.shape[1]
 
         for k in range(ng):
             m   = np.isin(s_w, grp_ids[k])
             t_g = t_w[m]
             cnt, _ = np.histogram(t_g, bins=edges_z)
-            gs_n   = grp_ids.shape[1]
             heat_z[k] = cnt / (bin_ms / 1e3) / max(gs_n, 1)
-            if len(t_g) >= 3:
+            # Only count spikes within the actual SWR window for mean time
+            m_win = m & (t_w >= t0) & (t_w <= t1)
+            t_g_win = t_w[m_win]
+            if len(t_g_win) >= 3:
                 gidx_sc.append(k)
-                gmean_sc.append(float(t_g.mean()))
+                gmean_sc.append(float(t_g_win.mean()))
 
-        # ---- heatmap ----
-        vmax = max(heat_z.max(), 1.0)
+        # Subtract per-group baseline (background theta rate) → excess activity
+        if baseline_rate_per_group is not None:
+            heat_excess = heat_z - baseline_rate_per_group[:, None]
+        else:
+            heat_excess = heat_z - heat_z[:, :int(pad_ms/bin_ms)].mean(axis=1, keepdims=True)
+
+        vmax = max(abs(heat_excess).max(), 1.0)
+
+        # ---- heatmap: diverging colormap, excess firing ----
         im = ax_heat.imshow(
-            heat_z, aspect="auto", origin="lower",
+            heat_excess, aspect="auto", origin="lower",
             extent=[edges_z[0], edges_z[-1], -0.5, ng - 0.5],
-            cmap="inferno", interpolation="nearest", vmin=0, vmax=vmax)
-        ax_heat.axvline(t0, color="cyan",  lw=1.2, ls="--", alpha=0.8, label="SWR start")
-        ax_heat.axvline(t1, color="cyan",  lw=1.2, ls="--", alpha=0.8, label="SWR end")
-        ax_heat.axvspan(t0, t1, color="white", alpha=0.08)
+            cmap="RdBu_r", interpolation="nearest",
+            vmin=-vmax * 0.5, vmax=vmax)
+        ax_heat.axvline(t0, color="gold", lw=1.5, ls="--", alpha=0.9, label="SWR start")
+        ax_heat.axvline(t1, color="gold", lw=1.5, ls="--", alpha=0.9, label="SWR end")
         ax_heat.set_xlim(edges_z[0], edges_z[-1])
         ax_heat.set_xlabel("Time (ms)", fontsize=8)
         ax_heat.set_ylabel("Seq group #", fontsize=8)
         ax_heat.set_title(title_heat, fontsize=9, loc="left")
         ax_heat.tick_params(labelsize=7)
 
+        # Scaffold expected timing lines (group k starts at t0 + k × step_ms)
+        n_steps = ng
+        win_dur  = t1 - t0
+        step_est = win_dur * 0.85 / n_steps  # matches auto-compute in simulation
+        fwd_times = [t0 + k * step_est for k in range(ng)]
+        rev_times = [t0 + (ng - 1 - k) * step_est for k in range(ng)]
+        exp_times = fwd_times if expected_sign > 0 else rev_times
+        ax_heat.plot(exp_times, range(ng), ":", color="yellow", lw=1.2,
+                     alpha=0.7, label="Expected scaffold")
+        ax_heat.legend(fontsize=6, loc="upper right")
+
         rho, pval = np.nan, np.nan
 
-        # ---- scatter + fit ----
+        # ---- scatter + Spearman ----
         if len(gidx_sc) >= 5:
             gi  = np.array(gidx_sc);  gm = np.array(gmean_sc)
+
+            # Compute Spearman safely — handle scipy version differences
             try:
-                from scipy.stats import spearmanr, linregress
-                rho, pval = spearmanr(gi, gm)
+                from scipy.stats import spearmanr
+                result = spearmanr(gi, gm)
+                # scipy >= 1.9 returns SpearmanrResult; earlier returns tuple
+                rho  = float(getattr(result, "statistic",
+                             getattr(result, "correlation", result[0])))
+                pval = float(getattr(result, "pvalue", result[1]))
+            except Exception as exc:
+                print(f"    [warn] spearmanr failed: {exc}")
+
+            # Linear fit for slope line
+            try:
+                from scipy.stats import linregress
                 slope, intercept, _, _, _ = linregress(gm, gi)
                 tl = np.linspace(gm.min() - 2, gm.max() + 2, 200)
+                color_fit = "tomato" if expected_sign < 0 else "royalblue"
                 ax_scatter.plot(tl, slope * tl + intercept, "--",
-                                color="tomato" if expected_sign < 0 else "royalblue",
-                                lw=1.8, alpha=0.85)
+                                color=color_fit, lw=1.8, alpha=0.85)
             except Exception:
                 pass
 
             colors_sc = [group_colors2[k] for k in gi]
             ax_scatter.scatter(gm, gi, c=colors_sc, s=55, edgecolors="k",
                                linewidths=0.4, zorder=4)
+            # Overlay mean times on heatmap as small white crosses
+            ax_heat.scatter(gm, gi, c="white", s=20, marker="+",
+                            linewidths=0.8, zorder=5)
 
-            # Overlay mean spike times on the heatmap as dots
-            ax_heat.scatter(gm, gi, c=colors_sc, s=18, edgecolors="white",
-                            linewidths=0.4, zorder=5)
-
-            sign_ok = (expected_sign > 0 and rho > 0.5) or (expected_sign < 0 and rho < -0.5)
-            verdict = "✓ PASS" if sign_ok else ("WEAK" if abs(rho) > 0.2 else "✗ FAIL")
+            if not np.isnan(rho):
+                sign_ok = (expected_sign > 0 and rho > 0.5) or                           (expected_sign < 0 and rho < -0.5)
+                verdict = "✓ PASS" if sign_ok else                           ("WEAK" if abs(rho) > 0.2 else "✗ FAIL")
+            else:
+                verdict = "? NaN"
             ax_scatter.set_title(
-                f"{title_scat}\nρ = {rho:+.3f}  p = {pval:.3f}  [{verdict}]",
+                f"{title_scat}\nρ = {rho:+.3f}  p = {pval:.3f}  [{verdict}]"
+                if not np.isnan(rho) else f"{title_scat}\nρ = nan  [? NaN — check scipy]",
                 fontsize=9, loc="left")
         else:
-            ax_scatter.set_title(f"{title_scat}\n(insufficient spikes)", fontsize=9, loc="left")
+            ax_scatter.set_title(
+                f"{title_scat}\n({len(gidx_sc)} groups with spikes — need ≥5)",
+                fontsize=9, loc="left")
 
         ax_scatter.axvspan(t0, t1, color="gold", alpha=0.18, label="SWR window")
         ax_scatter.set_xlim(edges_z[0], edges_z[-1])
@@ -372,6 +413,30 @@ def main():
         ax_scatter.legend(fontsize=7, loc="upper right")
         return im, rho, pval
 
+
+    # Compute per-group baseline firing rate from non-SWR periods
+    # (used for background subtraction in the diverging heatmap)
+    def _compute_baseline(t_spk, s_spk, grp_ids, sim_ms,
+                         swr_fwd, swr_rev, n_epochs=7):
+        """Mean firing rate per group during non-SWR periods."""
+        ng   = len(grp_ids)
+        gs_n = grp_ids.shape[1]
+        # Build boolean mask of non-SWR time
+        non_swr = np.ones(len(t_spk), dtype=bool)
+        for ep in range(n_epochs):
+            for ws, we in [(swr_fwd[0]+ep*1000, swr_fwd[1]+ep*1000),
+                           (swr_rev[0]+ep*1000, swr_rev[1]+ep*1000)]:
+                non_swr &= ~((t_spk >= ws - 20) & (t_spk <= we + 20))
+        t_non = t_spk[non_swr];  s_non = s_spk[non_swr]
+        # Total non-SWR duration (approximate)
+        swr_ms = n_epochs * 2 * (swr_fwd[1]-swr_fwd[0] + 40)
+        baseline_s = max((sim_ms - swr_ms) / 1000.0, 1.0)
+        baseline = np.zeros(ng, dtype=np.float32)
+        for k in range(ng):
+            m = np.isin(s_non, grp_ids[k])
+            baseline[k] = t_non[m].size / (baseline_s * max(gs_n, 1))
+        return baseline
+
     # Re-load raw spikes from HDF5 for the 2 ms recomputation
     with h5py.File(args.inp, "r") as h5:
         t_sup2   = np.array(h5["ca3_sup"]["spk_times"],   dtype=np.float64)
@@ -382,7 +447,9 @@ def main():
     ov_bin  = 5.0
     ov_edge = np.arange(0.0, sim_ms + ov_bin, ov_bin)
     ov_nbin = len(ov_edge) - 1
-    gs_sup2 = grp_sup2.shape[1]
+    gs_sup2   = grp_sup2.shape[1]
+    baseline2 = _compute_baseline(t_sup2, s_sup2, grp_sup2, sim_ms,
+                                  swr_fwd, swr_rev, n_epochs=7)
     heat_ov = np.zeros((n_groups, ov_nbin), dtype=np.float32)
     for k in range(n_groups):
         m = np.isin(s_sup2, grp_sup2[k])
@@ -430,7 +497,7 @@ def main():
         swr_fwd[0], swr_fwd[1], pad_ms=15.0, bin_ms=2.0,
         title_heat="B  SWR-1 forward  [2 ms bins, epoch 1]  ←  group 0 seed",
         title_scat="C  Per-group mean time — SWR-1 fwd\n   (positive slope = ✓ forward order)",
-        expected_sign=+1)
+        expected_sign=+1, baseline_rate_per_group=baseline2)
     fig2.colorbar(im1f, ax=ax_h1f, fraction=0.02).set_label("Hz", fontsize=7)
 
     # Epoch 1 reverse
@@ -442,7 +509,7 @@ def main():
         swr_rev[0], swr_rev[1], pad_ms=15.0, bin_ms=2.0,
         title_heat="D  SWR-2 reverse  [2 ms bins, epoch 1]  ←  group N-1 seed",
         title_scat="E  Per-group mean time — SWR-2 rev\n   (negative slope = ✓ reverse order)",
-        expected_sign=-1)
+        expected_sign=-1, baseline_rate_per_group=baseline2)
     fig2.colorbar(im1r, ax=ax_h1r, fraction=0.02).set_label("Hz", fontsize=7)
 
     # Add colorbar legend for group colours on the scatter panels
@@ -585,7 +652,7 @@ def main():
         # Fig 6 — Consolidation curve
         # Mean CA1→EC weight + L-LTP fraction vs SWR event number
         # ---------------------------------------------------------------
-        fig6, (ax6a, ax6b, ax6c) = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+        fig6, (ax6a, ax6b, ax6c, ax6d) = plt.subplots(4, 1, figsize=(12, 13), sharex=True)
         fig6.suptitle(f"STC Consolidation Curve  [{scale}]",
                       fontsize=12, fontweight="bold")
 
@@ -621,6 +688,24 @@ def main():
         ax6c.set_title("C  PRP pool accumulation + tag occupancy per event", fontsize=9, loc="left")
         ax6c.legend(fontsize=7)
         ax6c.grid(alpha=0.3)
+
+        # Panel D: Structural plasticity (3rd timescale)
+        ax6d.plot(ev, stc_n_struct_tot / max(stc_n_syn, 1) * 100,
+                  "D-", color="darkgreen", lw=1.5, ms=5,
+                  label="Structural (spine-enlarged) %")
+        ax6d.plot(ev, stc_n_struct_new / max(stc_n_syn, 1) * 100,
+                  "^-", color="limegreen", lw=1, ms=4, alpha=0.8,
+                  label="New structural captures this event")
+        ax6d.set_xlabel("SWR event #", fontsize=9)
+        ax6d.set_ylabel("% of CA1→EC synapses", fontsize=9)
+        ax6d.set_title(
+            "D  Structural plasticity (3rd timescale: spine enlargement)\n"
+            "   Analogy: AMPA-receptor clustering + spine volume increase\n"
+            "   (biology: days–weeks; requires repeated L-LTP induction)",
+            fontsize=9, loc="left")
+        ax6d.legend(fontsize=7)
+        ax6d.grid(alpha=0.3)
+        ax6d.set_ylim(-2, 105)
 
         fig6.tight_layout()
         _maybe_save(fig6, f"{args.save_prefix}_fig6_stc_consolidation.png" if args.save_prefix else None)

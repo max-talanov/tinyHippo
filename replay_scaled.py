@@ -512,7 +512,8 @@ def build_replay_network(
     scaffold_rate=720.0, scaffold_weight=0.55,
     # Background drive rates [Hz]
     # Watson UPDATE-2: SUP receives ~3.4x stronger DG/EC input than DEEP
-    rate_ec_ca1_pyr=70.0,          # reduced 200→70 Hz: CA1 target ~10 Hz baseline.
+    rate_ec_ca1_pyr=40.0,          # reduced 70→40 Hz: with Schaffer 8× reduced,
+                                    # EC background can also be lower.  CA1 target: ~5 Hz.
                                     # At 200 Hz CA1 fired at 39.7 Hz (4× bio target),
                                     # causing every EC neuron to fire in every SWR
                                     # window → non-selective PRP → mass L-LTP at event 3.
@@ -527,16 +528,24 @@ def build_replay_network(
     # w_seq_bwd raised 0.30→0.70: the backward chain must self-sustain reverse
     # replay until STDP asymmetry takes over.  w_fwd/w_bwd ≈ 2.1 still gives
     # a clear forward bias; STDP will sharpen it epoch-by-epoch (Frey & Morris).
-    w_seq_fwd=1.50,  w_seq_bwd=0.70,  w_sup_local=0.90,
+    # w_bwd reverted 0.70→0.50: ratio fwd/bwd=3.0 gives clean directional
+    # selectivity without allowing reverse-to-forward avalanche contamination
+    w_seq_fwd=1.50,  w_seq_bwd=0.50,  w_sup_local=0.90,
     w_sup_to_deep=1.30, w_deep_local=0.85, w_deep_fwd=0.70, w_deep_to_sup=0.20,
     # Schaffer collateral weights (mV per synapse)
     # Bio: single Schaffer EPSP ~0.1-0.3 mV (Andersen 2007).
     # Previous values (1.8/2.2) were 9-11× too high → CA1 fired at 296 Hz.
     # Reduced by 6× to bring CA1 into the 5-20 Hz biological range.
-    w_schaffer_sup_pyr=0.30,    w_schaffer_deep_pyr=0.35,
-    w_schaffer_sup_basket=0.25, w_schaffer_deep_basket=0.30,
-    # CA1 local inhibition: strengthen basket→pyr to help balance
-    w_ca1_ie=-3.5,    # basket→PYR (was -2.0; increased to counter residual exc)
+    # Schaffer weights: 8× reduction from 0.30→0.04 (biological: single
+    # Schaffer EPSP ~0.1-0.3 mV; with K=3000 convergence the total drive
+    # at 0.30 mV gave CA1 40 Hz — 8× bio target. At 0.04 mV:
+    # 3000×8.4×0.04 + 1000×13.8×0.05 = 1,008+690 = 1,698 mV/s → ~5 Hz
+    w_schaffer_sup_pyr=0.04,    w_schaffer_deep_pyr=0.05,
+    w_schaffer_sup_basket=0.15, w_schaffer_deep_basket=0.18,
+    # CA1 basket gets stronger Schaffer drive (0.15 vs 0.04) so fast-spiking
+    # interneurons remain faster than pyramidal cells (bio: FS cells have
+    # higher rheobase but still dominate at 30-80 Hz vs PYR 2-5 Hz in sleep)
+    w_ca1_ie=-6.0,    # basket→PYR increased -3.5→-6.0: restore E/I balance
     w_ca1_ee=0.5,     # PYR→PYR (unchanged)
     w_ca1_ei=0.5,     # PYR→basket (unchanged)
     w_ca1_oe=-1.5,    # OLM→PYR (unchanged)
@@ -951,8 +960,9 @@ def build_ec_lii(
     K_ca1_ec     : int   = 50,
     w_ca1_ec     : float = 1.0,
     delay_ca1_ec : float = 3.0,   # axonal conduction delay CA1→EC [ms]
-    rate_bg      : float = 80.0,  # tonic background Poisson drive [Hz].
-                                  # Reduced 200→80 Hz: at 200 Hz EC fired at 30 Hz
+    rate_bg      : float = 50.0,  # tonic background Poisson drive [Hz].
+                                  # Reduced 80→50 Hz: at lower CA1 rates, EC
+                                  # background can be sparser.  Target EC: ~8 Hz.
                                   # (2-6× bio target of 5-15 Hz), causing every EC
                                   # neuron to fire in every SWR window → non-selective
                                   # PRP accumulation.  Target: EC baseline ~8 Hz.
@@ -1118,12 +1128,20 @@ class STCHook:
     pre_ids       : np.ndarray         # [n_syn] int64  — source GIDs (cached at build)
     post_ids_g    : np.ndarray         # [n_syn] int64  — target GIDs (cached at build)
     ec_gids       : np.ndarray         # [n_ec]  int64  — EC neuron GIDs (for PRP lookup)
+    # ---- Structural plasticity (3rd timescale) ---------------------------------
+    # Analogy: after struct_threshold L-LTP epochs, a synapse undergoes spine
+    # enlargement (Bhatt et al. 2009): w_max raised 1.5→2.0 and weight boosted.
+    # This models AMPA-receptor clustering + actual spine volume increase that
+    # makes long-term memory effectively permanent on a days-weeks timescale.
+    struct_count  : np.ndarray = None  # [n_syn] int16 — cumulative L-LTP epochs
+    struct_done   : np.ndarray = None  # [n_syn] bool  — structurally potentiated
     n_calls       : int = 0
     history       : list = None
 
     def __post_init__(self):
         if self.history is None:
             self.history = []
+        # struct arrays initialised lazily in build_stc_hook (need n_syn)
 
 
 def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
@@ -1161,16 +1179,18 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
     post_idx     = np.array([ec_id_to_idx[gid] for gid in post_ids_arr], dtype=np.int32)
 
     return STCHook(
-        conns       = conns,
-        w           = w_arr,
-        tag         = np.zeros(n_syn, dtype=np.float32),
-        tag_time_ms = np.full(n_syn, -1e9, dtype=np.float32),
-        prp_pool    = np.zeros(ec_module.N, dtype=np.float32),
-        ltp_done    = np.zeros(n_syn, dtype=bool),
-        post_idx    = post_idx,
-        pre_ids     = pre_ids_arr,
-        post_ids_g  = post_ids_arr,
-        ec_gids     = ec_ids,
+        conns        = conns,
+        w            = w_arr,
+        tag          = np.zeros(n_syn, dtype=np.float32),
+        tag_time_ms  = np.full(n_syn, -1e9, dtype=np.float32),
+        prp_pool     = np.zeros(ec_module.N, dtype=np.float32),
+        ltp_done     = np.zeros(n_syn, dtype=bool),
+        post_idx     = post_idx,
+        pre_ids      = pre_ids_arr,
+        post_ids_g   = post_ids_arr,
+        ec_gids      = ec_ids,
+        struct_count = np.zeros(n_syn, dtype=np.int16),
+        struct_done  = np.zeros(n_syn, dtype=bool),
     )
 
 
@@ -1200,6 +1220,12 @@ def run_stc_hook(
     PRP_threshold : float = 3.0,  # SWR events needed (biologically: ~3-4 bursts)
     w_max         : float = 1.5,  # max weight after L-LTP capture
     w_min         : float = 0.1,  # min weight after LTD
+    # Structural plasticity parameters
+    struct_threshold : int   = 5,    # L-LTP epochs needed for spine enlargement
+                                      # biology: ~3-7 LTP induction events (weeks)
+    w_max_struct     : float = 2.0,  # weight ceiling after structural potentiation
+                                      # models AMPA-receptor clustering + spine growth
+    struct_boost     : float = 0.25, # one-off weight boost at structural capture
 ) -> dict:
     """
     Run one STC update cycle after a completed SWR epoch.
@@ -1313,6 +1339,20 @@ def run_stc_hook(
         stc.w[new_capture] = np.minimum(stc.w[new_capture] * 1.3, w_max)
         stc.ltp_done |= new_capture
 
+    # ---- 5b. Structural plasticity — 3rd timescale (spine enlargement) -------
+    # After struct_threshold L-LTP epochs a synapse is 'morphologically tagged':
+    # the dendritic spine enlarges and AMPA receptors cluster permanently.
+    # Model: increment struct_count for ALL currently-L-LTP synapses each call;
+    # when count reaches threshold, apply one-off boost and raise w_max to 2.0.
+    stc.struct_count[stc.ltp_done] += 1
+    new_struct = (stc.struct_count >= struct_threshold) & ~stc.struct_done
+    if new_struct.any():
+        stc.w[new_struct] = np.minimum(
+            stc.w[new_struct] + struct_boost, w_max_struct)
+        stc.struct_done |= new_struct
+    n_struct_new   = int(new_struct.sum())
+    n_struct_total = int(stc.struct_done.sum())
+
     # ---- 6. Write weights back to NEST ---------------------------------------
     nest.SetStatus(stc.conns, "weight", stc.w.tolist())
 
@@ -1338,6 +1378,8 @@ def run_stc_hook(
         prp_max      = prp_max,
         n_ltp_new    = n_ltp_new,
         n_ltp_total  = n_ltp_total,
+        n_struct_new   = n_struct_new,
+        n_struct_total = n_struct_total,
         w_mean       = w_mean,
         w_ltp_mean   = w_ltp_mean,
         dt_hook_s    = dt_hook,
@@ -1348,6 +1390,7 @@ def run_stc_hook(
           f"tagged={n_active:,}  EC_fired={n_ec_fired:,}  "
           f"PRP_mean={prp_mean:.2f}/{PRP_threshold:.0f}  "
           f"L-LTP_new={n_ltp_new:,}  L-LTP_total={n_ltp_total:,}  "
+          f"STRUCT_new={n_struct_new:,}  STRUCT_total={n_struct_total:,}  "
           f"w_mean={w_mean:.4f}  ({dt_hook:.2f}s)")
     return summary
 
@@ -1739,8 +1782,10 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             stc_grp.create_dataset("n_ec_fired",   data=np.array([h.get("n_ec_fired", 0)  for h in hist], dtype=np.int32))
             stc_grp.create_dataset("prp_mean",     data=np.array([h.get("prp_mean", 0.0)  for h in hist], dtype=np.float32))
             stc_grp.create_dataset("prp_max",      data=np.array([h.get("prp_max",  0.0)  for h in hist], dtype=np.float32))
-            stc_grp.create_dataset("n_ltp_new",    data=np.array([h["n_ltp_new"]    for h in hist], dtype=np.int32))
-            stc_grp.create_dataset("n_ltp_total",  data=np.array([h["n_ltp_total"]  for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_ltp_new",      data=np.array([h["n_ltp_new"]              for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_ltp_total",    data=np.array([h["n_ltp_total"]            for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_struct_new",   data=np.array([h.get("n_struct_new",   0)  for h in hist], dtype=np.int32))
+            stc_grp.create_dataset("n_struct_total", data=np.array([h.get("n_struct_total", 0)  for h in hist], dtype=np.int32))
             stc_grp.create_dataset("w_mean",       data=np.array([h["w_mean"]       for h in hist], dtype=np.float32))
             stc_grp.create_dataset("w_ltp_mean",   data=np.array([h["w_ltp_mean"]   for h in hist], dtype=np.float32))
             # Final weight distribution + L-LTP mask
@@ -1750,7 +1795,11 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             stc_grp.create_dataset("prp_pool_final", data=stc_hook.prp_pool.astype(np.float32),  **compress)
             stc_grp.create_dataset("tag_final",    data=stc_hook.tag.astype(np.float32),          **compress)
             # Per-synapse EC neuron index (for tag occupancy grouping)
-            stc_grp.create_dataset("post_idx",     data=stc_hook.post_idx.astype(np.int32),       **compress)
+            stc_grp.create_dataset("post_idx",       data=stc_hook.post_idx.astype(np.int32),         **compress)
+            # Structural plasticity snapshots
+            if stc_hook.struct_count is not None:
+                stc_grp.create_dataset("struct_count", data=stc_hook.struct_count.astype(np.int16),  **compress)
+                stc_grp.create_dataset("struct_done",  data=stc_hook.struct_done.astype(np.uint8),   **compress)
             stc_grp.attrs["n_swr_events"]  = stc_hook.n_calls
             stc_grp.attrs["w_init"]        = ec_module.w_init
             stc_grp.attrs["n_ec_neurons"]  = ec_module.N
@@ -1862,7 +1911,7 @@ Cortical module:
     total_sim_ms = SIM_MS * n_epochs
 
     print(f"\n{'='*72}")
-    print(f"  Watson et al. 2025 — Bidirectional Replay  [v7: replay + consolidation fixes]")
+    print(f"  Watson et al. 2025 — Bidirectional Replay  [v8: rates + structural plasticity]")
     print(f"  Scale    : {cfg['label']}")
     print(f"  CA3_SUP  : {cfg['N_ca3_sup']:>10,}  CA3_DEEP : {cfg['N_ca3_deep']:>8,}")
     print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {n_groups:>8,}  "
