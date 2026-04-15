@@ -564,6 +564,7 @@ def build_replay_network(
     w_ca1_oe=-1.5,    # OLM→PYR (unchanged)
     # Parallel
     n_threads=8,
+    seed_connect=42,  # RNG seed for V_m heterogeneity + connectivity
 ):
     """
     Build Watson 2025 two-layer CA1+CA3 replay network.
