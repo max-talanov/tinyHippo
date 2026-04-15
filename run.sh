@@ -8,17 +8,13 @@
 #SBATCH --time=04:00:00
 #SBATCH --partition=gp_bsccs
 
-# Scale and consolidation options
-# Normal run:
-#   sbatch --export=ALL,SCALE=12,N_SWR=7 run.sh
-# Phase 5 falsification (block L-LTP, confirm replay persists):
-#   sbatch --export=ALL,SCALE=12,N_SWR=7,PRP_THRESHOLD=999 run.sh
+# Normal run:   sbatch --export=ALL,SCALE=12,N_SWR=7 run.sh
+# Phase 5 run:  sbatch --export=ALL,SCALE=12,N_SWR=7,PRP_THRESHOLD=999 run.sh
 SCALE=${SCALE:-12}
 EC_LII_K=${EC_LII_K:-50}
-N_SWR=${N_SWR:-7}             # number of SWR epochs for consolidation
-EPOCH_MS=${EPOCH_MS:-1000}    # duration of each epoch in ms
-PRP_THRESHOLD=${PRP_THRESHOLD:-3.0}   # SWR events needed for L-LTP capture
-                                       # set to 999 for Phase 5 falsification
+N_SWR=${N_SWR:-7}
+EPOCH_MS=${EPOCH_MS:-1000}
+PRP_THRESHOLD=${PRP_THRESHOLD:-6.0}   # raised 3→6: gradual staircase consolidation
 OUTDIR="results"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -45,7 +41,6 @@ PY
 
 mkdir -p "$OUTDIR"
 
-# Derive output filename: tag Phase 5 runs to distinguish from normal runs
 if python3 -c "import sys; sys.exit(0 if float('${PRP_THRESHOLD}') > 100 else 1)" 2>/dev/null; then
     OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc_ph5_block.h5"
     echo "[Slurm] PHASE 5 FALSIFICATION RUN — L-LTP blocked (PRP_threshold=${PRP_THRESHOLD})"

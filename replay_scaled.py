@@ -509,7 +509,16 @@ def build_replay_network(
     # Previous default of 8 ms gave 35×8=280 ms >> 120 ms → groups 15-34
     # never received scaffold, making the second half of each replay fail.
     scaffold_on=True, scaffold_step_ms=None,
-    scaffold_rate=720.0, scaffold_weight=0.55,
+    # d_seq: axonal delay for the SEQUENCE CHAIN only (ms).
+    # Must be > scaffold_step (≈2.9ms) to ensure the scaffold fires each
+    # group BEFORE the recurrent cascade from the previous group arrives.
+    # d_fast (1.5ms) is still used for E↔I, Schaffer, and CA1 local.
+    d_seq=4.0,
+    # Scaffold now DOMINANT: each group fires from scaffold alone.
+    # 2000 Hz × 4 ms × 2.50 wt ≈ 20 mV net drive → suprathreshold
+    # without needing cascade from the previous group.
+    scaffold_rate=2000.0, scaffold_weight=2.50,
+    scaffold_dur_ms=4.0,    # ms per group (was 10; shorter = sharper)
     # Background drive rates [Hz]
     # Watson UPDATE-2: SUP receives ~3.4x stronger DG/EC input than DEEP
     rate_ec_ca1_pyr=40.0,          # reduced 70→40 Hz: with Schaffer 8× reduced,
@@ -528,9 +537,13 @@ def build_replay_network(
     # w_seq_bwd raised 0.30→0.70: the backward chain must self-sustain reverse
     # replay until STDP asymmetry takes over.  w_fwd/w_bwd ≈ 2.1 still gives
     # a clear forward bias; STDP will sharpen it epoch-by-epoch (Frey & Morris).
-    # w_bwd reverted 0.70→0.50: ratio fwd/bwd=3.0 gives clean directional
-    # selectivity without allowing reverse-to-forward avalanche contamination
-    w_seq_fwd=1.50,  w_seq_bwd=0.50,  w_sup_local=0.90,
+    # w_seq_fwd: 1.50→0.60 — feedforward drive must be sub-threshold alone.
+    # Combined with scaffold (now dominant), cascade cannot pre-empt it.
+    # Ratio fwd/bwd = 0.60/0.50 = 1.2: barely forward-biased; STDP will
+    # asymmetrically strengthen forward traces over epochs (Frey & Morris).
+    # d_seq: separate delay for the sequence chain (MUST exceed scaffold_step
+    # ≈2.9 ms so scaffold beats the cascade to each group).
+    w_seq_fwd=0.60,  w_seq_bwd=0.50,  w_sup_local=0.90,
     w_sup_to_deep=1.30, w_deep_local=0.85, w_deep_fwd=0.70, w_deep_to_sup=0.20,
     # Schaffer collateral weights (mV per synapse)
     # Bio: single Schaffer EPSP ~0.1-0.3 mV (Andersen 2007).
@@ -609,14 +622,32 @@ def build_replay_network(
     olm_params      = dict(a=0.02, b=0.25, c=-65.0, d=2.0, V_m=-65.0, U_m=-16.25, I_e=0.0)
 
     # -------------------------------------------------------------------------
-    # Populations
+    # Populations — with Gaussian V_m heterogeneity
+    # Neurons start at heterogeneous membrane potentials (σ=4–5 mV).
+    # This creates Gaussian-distributed spike timing within each population:
+    # near-threshold neurons fire first, sub-threshold ones fire later.
+    # Critical for visible sequential replay and smooth burst envelopes.
     # -------------------------------------------------------------------------
-    print("  Creating populations...")
+    print("  Creating populations (with V_m heterogeneity)...")
+    _rng_vm = np.random.default_rng(seed_connect + 1)  # reproducible
+
     CA1_PYR      = nest.Create("izhikevich", N_ca1_pyr,      params=ca1_pyr_params)
+    # CA1 PYR: σ=5 mV spread → Gaussian burst envelope (bio: ~15 mV cell-to-cell)
+    nest.SetStatus(CA1_PYR, "V_m",
+                   _rng_vm.normal(-65.0, 5.0, N_ca1_pyr).clip(-75,-55).tolist())
+
     CA1_BASKET   = nest.Create("izhikevich", N_ca1_basket,   params=basket_params)
     CA1_OLM      = nest.Create("izhikevich", N_ca1_olm,      params=olm_params)
+
     CA3_SUP      = nest.Create("izhikevich", N_ca3_sup,      params=ca3_sup_params)
+    # CA3 SUP: σ=4 mV → spread within each group → smooth diagonal heatmap
+    nest.SetStatus(CA3_SUP, "V_m",
+                   _rng_vm.normal(-63.2, 4.0, N_ca3_sup).clip(-72,-54).tolist())
+
     CA3_DEEP     = nest.Create("izhikevich", N_ca3_deep,     params=ca3_deep_params)
+    nest.SetStatus(CA3_DEEP, "V_m",
+                   _rng_vm.normal(-64.7, 4.0, N_ca3_deep).clip(-72,-55).tolist())
+
     CA3_INT_SUP  = nest.Create("izhikevich", N_ca3_int_sup,  params=basket_params)
     CA3_INT_DEEP = nest.Create("izhikevich", N_ca3_int_deep, params=basket_params)
 
@@ -634,7 +665,14 @@ def build_replay_network(
 
     _drive(N_ca1_pyr,      rate_ec_ca1_pyr,         CA1_PYR,      2.0, d_slow)
     _drive(N_ca1_basket,   rate_drive_ca1_basket,   CA1_BASKET,   2.0, d_fast)
-    _drive(N_ca3_sup,      rate_dg_ca3_sup,         CA3_SUP,      3.0, d_fast)
+    # DG→CA3 SUP: heterogeneous rates (σ=100 Hz) to spread membrane potentials
+    _dg_rates_sup = _rng_vm.normal(rate_dg_ca3_sup, 100.0,
+                                    N_ca3_sup).clip(400.0, 1400.0)
+    _dg_gen_sup   = nest.Create("poisson_generator", N_ca3_sup)
+    nest.SetStatus(_dg_gen_sup, "rate", _dg_rates_sup.tolist())
+    nest.Connect(_dg_gen_sup, CA3_SUP, conn_spec="one_to_one",
+                 syn_spec={"weight": 3.0, "delay": d_fast})
+    # DG→CA3 DEEP: uniform (smaller pop, less impact on replay clarity)
     _drive(N_ca3_deep,     rate_dg_ca3_deep,        CA3_DEEP,     1.0, d_fast)
     _drive(N_ca3_sup,      rate_ec_ca3_sup,         CA3_SUP,      2.0, d_slow)
     _drive(N_ca3_deep,     rate_ec_ca3_deep,        CA3_DEEP,     1.2, d_slow)
@@ -743,7 +781,7 @@ def build_replay_network(
         p_deep_local=p_deep_local,   w_deep_local=w_deep_local,
         p_deep_fwd=p_deep_fwd,       w_deep_fwd=w_deep_fwd,
         p_deep_to_sup=p_deep_to_sup, w_deep_to_sup=w_deep_to_sup,
-        delay=d_fast,
+        delay=d_seq,   # sequence chain uses longer delay to prevent avalanche
     )
     print(f"    done in {time.perf_counter()-t_seq:.1f}s")
 
@@ -805,11 +843,11 @@ def build_replay_network(
         make_staggered_replay_drive(
             ca3_sup_groups, swr_fwd_start, direction="forward",
             inter_step_ms=scaffold_step_ms, drive_rate=scaffold_rate,
-            weight=scaffold_weight)
+            drive_dur_ms=scaffold_dur_ms, weight=scaffold_weight)
         make_staggered_replay_drive(
             ca3_sup_groups, swr_rev_start, direction="reverse",
             inter_step_ms=scaffold_step_ms, drive_rate=scaffold_rate,
-            weight=scaffold_weight)
+            drive_dur_ms=scaffold_dur_ms, weight=scaffold_weight)
 
     # ---- Recorders ----------------------------------------------------------
     spk_ca1_pyr      = nest.Create("spike_recorder")
@@ -960,9 +998,11 @@ def build_ec_lii(
     K_ca1_ec     : int   = 50,
     w_ca1_ec     : float = 1.0,
     delay_ca1_ec : float = 3.0,   # axonal conduction delay CA1→EC [ms]
-    rate_bg      : float = 50.0,  # tonic background Poisson drive [Hz].
-                                  # Reduced 80→50 Hz: at lower CA1 rates, EC
-                                  # background can be sparser.  Target EC: ~8 Hz.
+    rate_bg      : float = 0.0,   # EC background Poisson drive set to ZERO.
+                                   # CA1→EC K=50 inputs at 7.5 Hz provides 375 Hz
+                                   # of drive → EC fires at ~5-8 Hz from CA1 alone.
+                                   # During SWR bursts only CA1-driven EC neurons
+                                   # fire → selective PRP → gradual consolidation.
                                   # (2-6× bio target of 5-15 Hz), causing every EC
                                   # neuron to fire in every SWR window → non-selective
                                   # PRP accumulation.  Target: EC baseline ~8 Hz.
@@ -1217,7 +1257,10 @@ def run_stc_hook(
     # One unit is added each time an EC neuron fires during a SWR window.
     # PRP_threshold = minimum number of SWR activations needed to produce PRP
     # and capture tagged synapses to L-LTP.
-    PRP_threshold : float = 3.0,  # SWR events needed (biologically: ~3-4 bursts)
+    PRP_threshold : float = 6.0,  # raised 3→6: with EC now selective (~20-40%
+                                   # of neurons per SWR vs 100% before), threshold
+                                   # of 6 events produces a gradual staircase
+                                   # matching Frey & Morris 1997 consolidation data.
     w_max         : float = 1.5,  # max weight after L-LTP capture
     w_min         : float = 0.1,  # min weight after LTD
     # Structural plasticity parameters
@@ -1911,7 +1954,7 @@ Cortical module:
     total_sim_ms = SIM_MS * n_epochs
 
     print(f"\n{'='*72}")
-    print(f"  Watson et al. 2025 — Bidirectional Replay  [v8: rates + structural plasticity]")
+    print(f"  Watson et al. 2025 — Bidirectional Replay  [v9: sequential replay + gradual STC]")
     print(f"  Scale    : {cfg['label']}")
     print(f"  CA3_SUP  : {cfg['N_ca3_sup']:>10,}  CA3_DEEP : {cfg['N_ca3_deep']:>8,}")
     print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {n_groups:>8,}  "
