@@ -379,8 +379,16 @@ def main():
                 color_fit = "tomato" if expected_sign < 0 else "royalblue"
                 ax_scatter.plot(tl, slope * tl + intercept, "--",
                                 color=color_fit, lw=1.8, alpha=0.85)
-            except Exception:
-                pass
+            except Exception as lr_exc:
+                # scipy unavailable: draw a simple numpy polyfit line instead
+                try:
+                    coeffs = np.polyfit(gm, gi, 1)
+                    tl = np.linspace(gm.min() - 2, gm.max() + 2, 200)
+                    color_fit = "tomato" if expected_sign < 0 else "royalblue"
+                    ax_scatter.plot(tl, np.polyval(coeffs, tl), "--",
+                                    color=color_fit, lw=1.8, alpha=0.85)
+                except Exception:
+                    pass
 
             colors_sc = [group_colors2[k] for k in gi]
             ax_scatter.scatter(gm, gi, c=colors_sc, s=55, edgecolors="k",
@@ -643,9 +651,13 @@ def main():
             stc_n_syn      = int(s.attrs.get("n_synapses", len(stc_w_final)))
             stc_n_ec       = int(s.attrs.get("n_ec_neurons", 1))
             # Optional per-synapse arrays
-            stc_post_idx   = np.array(s["post_idx"],       dtype=np.int32)  if "post_idx"       in s else None
-            stc_prp_pool   = np.array(s["prp_pool_final"], dtype=np.float32) if "prp_pool_final" in s else None
-            stc_tag_final  = np.array(s["tag_final"],      dtype=np.float32) if "tag_final"      in s else None
+            stc_post_idx       = np.array(s["post_idx"],       dtype=np.int32)   if "post_idx"       in s else None
+            stc_prp_pool       = np.array(s["prp_pool_final"], dtype=np.float32)  if "prp_pool_final" in s else None
+            stc_tag_final      = np.array(s["tag_final"],      dtype=np.float32)  if "tag_final"      in s else None
+            # Structural plasticity (v8+ — fallback to zeros for older HDF5)
+            stc_n_struct_new   = np.array(s["n_struct_new"],   dtype=np.int32)    if "n_struct_new"   in s else np.zeros_like(stc_event)
+            stc_n_struct_tot   = np.array(s["n_struct_total"], dtype=np.int32)    if "n_struct_total" in s else np.zeros_like(stc_event)
+            stc_struct_done    = np.array(s["struct_done"],    dtype=bool)        if "struct_done"    in s else None
 
     if stc_present:
         # ---------------------------------------------------------------
