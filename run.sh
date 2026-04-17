@@ -5,16 +5,19 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=50
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --partition=gp_bsccs
 
-# Normal run:   sbatch --export=ALL,SCALE=12,N_SWR=7 run.sh
-# Phase 5 run:  sbatch --export=ALL,SCALE=12,N_SWR=7,PRP_THRESHOLD=999 run.sh
+# Normal run:   sbatch --export=ALL,SCALE=12,N_SWR=14 run.sh
+# Phase 5 run:  sbatch --export=ALL,SCALE=12,N_SWR=14,PRP_THRESHOLD=999 run.sh
+# Quick test:   sbatch --export=ALL,SCALE=1,N_SWR=14 run.sh
 SCALE=${SCALE:-12}
 EC_LII_K=${EC_LII_K:-50}
-N_SWR=${N_SWR:-7}
+N_SWR=${N_SWR:-14}            # doubled 7→14: 28 total SWR events, gradual consolidation
 EPOCH_MS=${EPOCH_MS:-1000}
-PRP_THRESHOLD=${PRP_THRESHOLD:-6.0}   # raised 3→6: gradual staircase consolidation
+PRP_THRESHOLD=${PRP_THRESHOLD:-14.0}  # raised to match N_SWR×2 ÷ ~1.7 occupancy
+                                       # EC fires in ~80-100% of events → crossing
+                                       # spreads over events 14-18 → ~4-event ramp
 OUTDIR="results"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
