@@ -136,7 +136,7 @@ def main():
         t_bsk,  s_bsk,  n_bsk  = _spk("ca1_basket")
         _,      _,      n_olm  = _spk("ca1_olm")
 
-        # EC LII/III — optional (present only when --ec-lii was used)
+        # EC LII/III — optional
         ec_present = "ec_lii" in h5
         if ec_present:
             t_ec, s_ec, n_ec = _spk("ec_lii")
@@ -146,9 +146,26 @@ def main():
             if "w_ca1_ec_note" in ec_attrs:
                 print(f"  EC weights: {ec_attrs['w_ca1_ec_note']}")
         else:
-            t_ec = s_ec = None
-            n_ec = 0
+            t_ec = s_ec = None; n_ec = 0
             print("  EC LII/III: not present in this HDF5")
+
+        # Phase 3: EC LV
+        eclv_present = "ec_lv" in h5
+        if eclv_present:
+            t_lv, s_lv, n_lv = _spk("ec_lv")
+            lv_attrs = dict(h5["ec_lv"].attrs)
+            print(f"  EC LV (Phase 3): N={n_lv:,}  K_ca1={lv_attrs.get('K_ca1_lv','?')}")
+        else:
+            t_lv = s_lv = None; n_lv = 0
+
+        # Phase 3: mPFC
+        mpfc_present = "mpfc" in h5
+        if mpfc_present:
+            t_pfc, s_pfc, n_pfc = _spk("mpfc")
+            pfc_attrs = dict(h5["mpfc"].attrs)
+            print(f"  mPFC   (Phase 3): N={n_pfc:,}  K_eclv={pfc_attrs.get('K_eclv_mpfc','?')}")
+        else:
+            t_pfc = s_pfc = None; n_pfc = 0
 
         # Group membership arrays  [n_groups × group_size]
         group_ids_sup  = np.array(h5["ca3_sup"]["group_ids"],  dtype=np.int64)
@@ -270,6 +287,14 @@ def main():
         ax2.legend(fontsize=7, loc="upper right")
 
     ax.set_xlabel("Time (ms)", fontsize=9)
+
+    # Panel G: EC LV raster (Phase 3)
+    if eclv_present:
+        ax = axes[6] if len(axes) > 6 else None
+        if ax is None:
+            # need to rebuild fig with extra rows if Phase 3 present
+            pass
+        # (Phase 3 panels added in Fig 5 EC analysis below)
 
     fig.tight_layout()
     _maybe_save(fig, f"{args.save_prefix}_fig1_overview.png" if args.save_prefix else None)
@@ -567,6 +592,16 @@ def main():
         pop_spk_t.append(t_ec)
         pop_n_cells.append(n_ec)
         bar_colors.append("coral")
+    if eclv_present:
+        pop_labels.append("EC LV")
+        pop_spk_t.append(t_lv)
+        pop_n_cells.append(n_lv)
+        bar_colors.append("tomato")
+    if mpfc_present:
+        pop_labels.append("mPFC")
+        pop_spk_t.append(t_pfc)
+        pop_n_cells.append(n_pfc)
+        bar_colors.append("mediumpurple")
     mean_rates  = [len(t) / (n * sim_ms / 1e3) if n > 0 else 0
                    for t, n in zip(pop_spk_t, pop_n_cells)]
 
@@ -630,6 +665,63 @@ def main():
 
         fig5.tight_layout()
         _maybe_save(fig5, f"{args.save_prefix}_fig5_ec_analysis.png" if args.save_prefix else None)
+
+    # ------------------------------------------------------------------
+    # Fig 5b — Phase 3: EC LV + mPFC analysis
+    # ------------------------------------------------------------------
+    if eclv_present:
+        n_panels = 3 if mpfc_present else 2
+        fig5b, axes5b = plt.subplots(n_panels, 1, figsize=(14, 4*n_panels), sharex=False)
+        if n_panels == 1: axes5b = [axes5b]
+        fig5b.suptitle(f"Phase 3: EC Layer V + mPFC  [{scale}]",
+                       fontsize=12, fontweight="bold")
+
+        # Panel A: EC LV rate vs CA1 rate
+        ax = axes5b[0]
+        tc_lv, rc_lv = _binned_rate(t_lv, n_lv, sim_ms, bin_ms)
+        ax.plot(tc_lv, rc_lv, color="tomato", lw=1.2, label="EC LV")
+        if ec_present:
+            _, rc_lii = _binned_rate(t_ec, n_ec, sim_ms, bin_ms)
+            ax.plot(tc_lv[:len(rc_lii)], rc_lii, color="coral", lw=0.8,
+                    alpha=0.7, label="EC LII")
+        _, rc_ca1 = _binned_rate(t_pyr, n_pyr, sim_ms, bin_ms)
+        ax.plot(tc_lv[:len(rc_ca1)], rc_ca1, color="steelblue", lw=0.8,
+                alpha=0.5, label="CA1 PYR")
+        _shade(ax, swr_fwd, swr_rev)
+        ax.legend(fontsize=8); ax.set_xlim(0, sim_ms)
+        ax.set_ylabel("Rate (Hz)", fontsize=9)
+        ax.set_title(f"A  EC LV vs EC LII vs CA1 rates  [{bin_ms:.0f} ms bins]",
+                     fontsize=9, loc="left")
+
+        # Panel B: EC LV raster
+        ax = axes5b[1]
+        t_lv_r, s_lv_r = _subsample(t_lv, s_lv, max_spk)
+        ax.scatter(t_lv_r, s_lv_r, s=0.6, color="tomato",
+                   rasterized=True, alpha=0.6)
+        _shade(ax, swr_fwd, swr_rev)
+        ax.set_xlim(0, sim_ms)
+        ax.set_ylabel("EC LV neuron ID", fontsize=9)
+        ax.set_title("B  EC LV raster  [closes hippocampo-cortical loop]",
+                     fontsize=9, loc="left")
+
+        # Panel C: mPFC raster (only if present)
+        if mpfc_present:
+            ax = axes5b[2]
+            t_pfc_r, s_pfc_r = _subsample(t_pfc, s_pfc, max_spk)
+            ax.scatter(t_pfc_r, s_pfc_r, s=1.0, color="mediumpurple",
+                       rasterized=True, alpha=0.7)
+            _shade(ax, swr_fwd, swr_rev)
+            ax.set_xlim(0, sim_ms)
+            ax.set_ylabel("mPFC neuron ID", fontsize=9)
+            ax.set_title("C  mPFC raster  [cortical engram endpoint]",
+                         fontsize=9, loc="left")
+            ax.set_xlabel("Time (ms)", fontsize=9)
+        else:
+            axes5b[-1].set_xlabel("Time (ms)", fontsize=9)
+
+        fig5b.tight_layout()
+        _maybe_save(fig5b,
+                    f"{args.save_prefix}_fig5b_phase3_eclv_mpfc.png" if args.save_prefix else None)
 
     # ------------------------------------------------------------------
     # Figs 6-8 — STC consolidation figures (only when /stc group present)

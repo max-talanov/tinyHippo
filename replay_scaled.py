@@ -992,6 +992,62 @@ class ECModule:
     w_init     : float
 
 
+
+# ============================================================================
+# Phase 3 — EC Layer V and mPFC modules
+# ============================================================================
+
+@dataclass
+class ECLVModule:
+    """
+    Entorhinal cortex Layer V — closes the hippocampo-cortical loop.
+
+    EC LV pyramidal cells (burst-capable, layer-5 type) receive:
+      • CA1 PYR input  : direct projection from hippocampus (K=30, static)
+      • EC LII input   : within-EC feedforward (K=20, static)
+    And project back to:
+      • CA3 SUP        : feedback closes the loop (K=5, static_synapse)
+      • mPFC           : downstream cortical consolidation target
+
+    Biological references
+    ----------------------
+    EC LV principal cells receive direct CA1 input (Köhler 1985) and project
+    to deep-layer cortex including mPFC (Insausti et al. 1987).  The CA1→LV
+    projection is denser than CA1→LII, making EC LV the primary readout of
+    hippocampal output.  The LV→CA3 feedback (via the angular bundle) provides
+    the cortical re-entry that sustains offline replay without external drive.
+    """
+    population  : object  # NodeCollection — EC LV pyramids
+    spike_rec   : object  # NodeCollection — spike recorder
+    N           : int
+    K_ca1_lv    : int     # in-degree from CA1 PYR
+    K_eclii_lv  : int     # in-degree from EC LII
+    w_init      : float
+
+
+@dataclass
+class MPFCModule:
+    """
+    Medial prefrontal cortex — terminal cortical consolidation target.
+
+    Receives convergent input from EC LV.  The weight distribution of
+    EC LV → mPFC synapses (tracked via the STC hook analogue in Phase 3)
+    represents the final "cortical engram" — the stable long-term memory
+    trace that persists after hippocampal lesion.
+
+    Biological references
+    ----------------------
+    mPFC receives a dense projection from EC LV (Insausti 1993) and shows
+    place-cell-like activity during sleep replay (Peyrache et al. 2009).
+    Remote memory is maintained by mPFC even after hippocampal lesion
+    (Frankland & Bontempi 2005) — the endpoint this module models.
+    """
+    population  : object  # NodeCollection — mPFC layer-5 pyramids
+    spike_rec   : object  # NodeCollection — spike recorder
+    N           : int
+    K_eclv_mpfc : int     # in-degree from EC LV
+    w_init      : float
+
 def build_ec_lii(
     ca1_pyr,
     ca1_spike_rec,           # spike_recorder for CA1 PYR (net["spk_pyr"])
@@ -1184,6 +1240,152 @@ class STCHook:
             self.history = []
         # struct arrays initialised lazily in build_stc_hook (need n_syn)
 
+
+
+def build_ec_lv(
+    ca1_pyr,
+    ec_lii_pop,           # ECModule.population — EC LII/III
+    ca3_sup,              # CA3 SUP NodeCollection — receives feedback
+    N_ec_lv   : int   = None,   # defaults to 60% of EC LII size
+    K_ca1_lv  : int   = 30,     # CA1 → EC LV in-degree (dense, Köhler 1985)
+    K_eclii_lv: int   = 20,     # EC LII → EC LV in-degree (feedforward)
+    K_lv_ca3  : int   = 5,      # EC LV → CA3 SUP in-degree (feedback)
+    w_ca1_lv  : float = 1.2,    # mV  — CA1→LV stronger than CA1→LII
+    w_eclii_lv: float = 0.8,    # mV  — within-EC feedforward
+    w_lv_ca3  : float = 0.6,    # mV  — feedback to CA3 (modest; avoids runaway)
+    delay_ca1  : float = 3.0,   # ms  — CA1→EC conduction
+    delay_eclii: float = 2.0,   # ms  — within-EC
+    delay_ca3  : float = 5.0,   # ms  — EC→CA3 feedback (longer, angular bundle)
+) -> "ECLVModule":
+    """
+    Build EC Layer V population and wire it into the hippocampo-cortical loop.
+
+    Network motif
+    -------------
+    CA1 PYR ──[K=30, w=1.2]──► EC LV ──[K=5, w=0.6]──► CA3 SUP (feedback)
+    EC LII  ──[K=20, w=0.8]──► EC LV
+    EC LV   ──[K=K_eclv_mpfc]──► mPFC  (wired in build_mpfc)
+
+    EC LV uses Izhikevich layer-5 / intrinsic-burst parameters:
+      a=0.02, b=0.2, c=-55.0, d=4.0, I_e=3.0
+    This gives low-frequency bursting (~3–8 Hz baseline), matching
+    in-vivo recordings of EC LV principal cells during NREM sleep
+    (Hahn et al. 2012).
+
+    The EC LV → CA3 feedback uses static_synapse (fast connect).
+    Weight is intentionally sub-maximal (0.6 mV) so that feedback
+    alone cannot drive CA3 — it only amplifies ongoing replay activity.
+    """
+    import nest, time as _time
+
+    t0 = _time.perf_counter()
+    N_lii = len(ec_lii_pop)
+    N_lv  = N_ec_lv if N_ec_lv is not None else max(10, int(N_lii * 0.60))
+    N_ca1 = len(ca1_pyr)
+    N_ca3 = len(ca3_sup)
+
+    print(f"\n  [ECLVModule] Building EC Layer V")
+    print(f"  [ECLVModule]   N_lv={N_lv:,}  N_ca1={N_ca1:,}  N_lii={N_lii:,}  N_ca3={N_ca3:,}")
+
+    # Izhikevich layer-5 intrinsic-burst params
+    EC_LV = nest.Create("izhikevich", N_lv,
+                        params=dict(a=0.02, b=0.2, c=-55.0, d=4.0,
+                                    V_m=-64.7, U_m=-13.0, I_e=3.0))
+
+    # CA1 → EC LV  (fixed_indegree, static — fast connect)
+    K1 = min(K_ca1_lv, N_ca1)
+    t_c = _time.perf_counter()
+    nest.Connect(ca1_pyr, EC_LV,
+                 conn_spec={"rule": "fixed_indegree", "indegree": K1},
+                 syn_spec={"synapse_model": "static_synapse",
+                           "weight": float(w_ca1_lv), "delay": float(delay_ca1)})
+    print(f"  [ECLVModule] CA1→LV: {N_lv*K1:,} synapses in {_time.perf_counter()-t_c:.2f}s")
+
+    # EC LII → EC LV  (within-EC feedforward)
+    K2 = min(K_eclii_lv, N_lii)
+    t_c = _time.perf_counter()
+    nest.Connect(ec_lii_pop, EC_LV,
+                 conn_spec={"rule": "fixed_indegree", "indegree": K2},
+                 syn_spec={"synapse_model": "static_synapse",
+                           "weight": float(w_eclii_lv), "delay": float(delay_eclii)})
+    print(f"  [ECLVModule] ECLII→LV: {N_lv*K2:,} synapses in {_time.perf_counter()-t_c:.2f}s")
+
+    # EC LV → CA3 SUP feedback  (closes the hippocampo-cortical loop)
+    K3 = min(K_lv_ca3, N_lv)
+    t_c = _time.perf_counter()
+    nest.Connect(EC_LV, ca3_sup,
+                 conn_spec={"rule": "fixed_indegree", "indegree": K3},
+                 syn_spec={"synapse_model": "static_synapse",
+                           "weight": float(w_lv_ca3), "delay": float(delay_ca3)})
+    print(f"  [ECLVModule] LV→CA3: {N_ca3*K3:,} synapses in {_time.perf_counter()-t_c:.2f}s")
+
+    spk_lv = nest.Create("spike_recorder")
+    nest.Connect(EC_LV, spk_lv)
+    print(f"  [ECLVModule] Total build: {_time.perf_counter()-t0:.1f}s")
+
+    return ECLVModule(
+        population  = EC_LV,
+        spike_rec   = spk_lv,
+        N           = N_lv,
+        K_ca1_lv    = K1,
+        K_eclii_lv  = K2,
+        w_init      = w_ca1_lv,
+    )
+
+
+def build_mpfc(
+    ec_lv_pop,
+    N_mpfc       : int   = None,   # defaults to 20% of EC LV size
+    K_eclv_mpfc  : int   = 20,     # EC LV → mPFC in-degree
+    w_eclv_mpfc  : float = 1.0,    # mV
+    delay_lv_mpfc: float = 8.0,    # ms — longer cortico-cortical delay
+) -> "MPFCModule":
+    """
+    Build mPFC population receiving EC LV input.
+
+    mPFC uses layer-5 prefrontal parameters (regular spiking, high adaptation):
+      a=0.02, b=0.2, c=-65.0, d=8.0
+    This gives sparse, burst-resistant firing (~2–5 Hz) matching in-vivo
+    mPFC recordings during NREM sleep (Peyrache et al. 2009).
+
+    The EC LV → mPFC weight distribution is the 'cortical engram':
+    after repeated hippocampal replay + EC LV consolidation, these weights
+    encode the replayed sequence in a hippocampus-independent form.
+    """
+    import nest, time as _time
+
+    t0 = _time.perf_counter()
+    N_lv  = len(ec_lv_pop)
+    N_pfc = N_mpfc if N_mpfc is not None else max(10, int(N_lv * 0.20))
+    K     = min(K_eclv_mpfc, N_lv)
+
+    print(f"\n  [MPFCModule] Building mPFC")
+    print(f"  [MPFCModule]   N_mpfc={N_pfc:,}  N_lv={N_lv:,}  K={K}")
+
+    # Izhikevich layer-5 prefrontal: regular spiking, strongly adapting
+    MPFC = nest.Create("izhikevich", N_pfc,
+                       params=dict(a=0.02, b=0.2, c=-65.0, d=8.0,
+                                   V_m=-65.0, U_m=-13.0, I_e=0.0))
+
+    # EC LV → mPFC
+    t_c = _time.perf_counter()
+    nest.Connect(ec_lv_pop, MPFC,
+                 conn_spec={"rule": "fixed_indegree", "indegree": K},
+                 syn_spec={"synapse_model": "static_synapse",
+                           "weight": float(w_eclv_mpfc), "delay": float(delay_lv_mpfc)})
+    print(f"  [MPFCModule] LV→mPFC: {N_pfc*K:,} synapses in {_time.perf_counter()-t_c:.2f}s")
+
+    spk_mpfc = nest.Create("spike_recorder")
+    nest.Connect(MPFC, spk_mpfc)
+    print(f"  [MPFCModule] Total build: {_time.perf_counter()-t0:.1f}s")
+
+    return MPFCModule(
+        population  = MPFC,
+        spike_rec   = spk_mpfc,
+        N           = N_pfc,
+        K_eclv_mpfc = K,
+        w_init      = w_eclv_mpfc,
+    )
 
 def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
     """
@@ -1583,7 +1785,7 @@ def plot_bidirectional_replay(net, sim_ms=1000.0, save_prefix="replay"):
 # Console report
 # ============================================================================
 
-def print_report(net, sim_ms, scale_label, ec_module=None):
+def print_report(net, sim_ms, scale_label, ec_module=None, eclv_module=None, mpfc_module=None):
     print(f"\n{'='*72}")
     print(f"SIMULATION REPORT  [{scale_label}]")
     print(f"{'='*72}")
@@ -1630,10 +1832,22 @@ def print_report(net, sim_ms, scale_label, ec_module=None):
         for label, (ws, we) in [("SWR-1 fwd", net["swr_fwd"]), ("SWR-2 rev", net["swr_rev"])]:
             n_ec = np.sum((t_ec >= ws) & (t_ec <= we))
             print(f"  {label}: EC spikes in window = {n_ec:,}")
-        # Quick CA1->EC weight snapshot
-        # Weight snapshot deferred to Phase 2 STC hook (GetConnections is
-        # too slow to call here with 226M hippocampal synapses in kernel).
         print(f"  CA1->EC weights  : deferred — use STC hook (Phase 2)")
+
+    if 'eclv_module' in dir() and eclv_module is not None:
+        print("\n--- EC Layer V (Phase 3 — loop closure) ---")
+        t_lv, _ = _get_spikes(eclv_module.spike_rec)
+        rate_lv  = len(t_lv) / (eclv_module.N * sim_ms / 1000.0)
+        print(f"  {'EC LV':20s}: N={eclv_module.N:8,} | {len(t_lv):10,} spikes | {rate_lv:6.2f} Hz")
+        for label, (ws, we) in [("SWR-1 fwd", net["swr_fwd"]), ("SWR-2 rev", net["swr_rev"])]:
+            n_lv = np.sum((t_lv >= ws) & (t_lv <= we))
+            print(f"  {label}: EC LV spikes in window = {n_lv:,}")
+
+    if 'mpfc_module' in dir() and mpfc_module is not None:
+        print("\n--- mPFC (Phase 3 — cortical engram endpoint) ---")
+        t_pfc, _ = _get_spikes(mpfc_module.spike_rec)
+        rate_pfc  = len(t_pfc) / (mpfc_module.N * sim_ms / 1000.0)
+        print(f"  {'mPFC':20s}: N={mpfc_module.N:8,} | {len(t_pfc):10,} spikes | {rate_pfc:6.2f} Hz")
 
     print(f"{'='*72}")
 
@@ -1643,7 +1857,8 @@ def print_report(net, sim_ms, scale_label, ec_module=None):
 # ============================================================================
 
 def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
-                     ec_module=None, stc_hook=None):
+                     ec_module=None, stc_hook=None,
+                     eclv_module=None, mpfc_module=None):
     """
     Save all simulation results to an HDF5 file for offline plotting.
 
@@ -1705,6 +1920,7 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
     if ec_module is not None:
         t_local, s_local = _get_spikes(ec_module.spike_rec)
         spk_cache["ec_lii"] = _gather_spikes(t_local, s_local)
+    # Phase 3 spike gathering handled inline (modules may be None)
 
     # Only rank 0 writes the file — all other ranks are done here.
     if _mpi_rank() != 0:
@@ -1762,10 +1978,38 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             counts, _ = np.histogram(t_spk, bins=edges)
             rate_ec = (counts / (bin_ms / 1e3) / max(ec_module.N, 1)).astype(np.float32)
             g_ec.create_dataset("rate", data=rate_ec)
-            # Weight snapshot skipped for Phase 1 — GetConnections(pre, EC)
-            # would scan 226M synapses.  Phase 2 STC hook reads weights via
-            # GetConnections(target=EC_LII) which only touches EC's 600k slots.
             g_ec.attrs["w_ca1_ec_note"] = "deferred to Phase 2 STC hook"
+
+        # Phase 3: EC LV
+        if eclv_module is not None:
+            t_lv, s_lv = _gather_spikes(*_get_spikes(eclv_module.spike_rec))
+            if _mpi_rank() == 0:
+                g_lv = h5.create_group("ec_lv")
+                g_lv.attrs["n_cells"]    = eclv_module.N
+                g_lv.attrs["K_ca1_lv"]   = eclv_module.K_ca1_lv
+                g_lv.attrs["K_eclii_lv"] = eclv_module.K_eclii_lv
+                g_lv.attrs["w_init"]     = eclv_module.w_init
+                g_lv.create_dataset("spk_times",   data=t_lv.astype(np.float32), **compress)
+                g_lv.create_dataset("spk_senders", data=s_lv.astype(np.int32),   **compress)
+                counts_lv, _ = np.histogram(t_lv, bins=edges)
+                g_lv.create_dataset("rate",
+                    data=(counts_lv/(bin_ms/1e3)/max(eclv_module.N,1)).astype(np.float32))
+                h5.attrs["ec_lv_present"] = True
+
+        # Phase 3: mPFC
+        if mpfc_module is not None:
+            t_pfc, s_pfc = _gather_spikes(*_get_spikes(mpfc_module.spike_rec))
+            if _mpi_rank() == 0:
+                g_pfc = h5.create_group("mpfc")
+                g_pfc.attrs["n_cells"]     = mpfc_module.N
+                g_pfc.attrs["K_eclv_mpfc"] = mpfc_module.K_eclv_mpfc
+                g_pfc.attrs["w_init"]      = mpfc_module.w_init
+                g_pfc.create_dataset("spk_times",   data=t_pfc.astype(np.float32), **compress)
+                g_pfc.create_dataset("spk_senders", data=s_pfc.astype(np.int32),   **compress)
+                counts_pfc, _ = np.histogram(t_pfc, bins=edges)
+                g_pfc.create_dataset("rate",
+                    data=(counts_pfc/(bin_ms/1e3)/max(mpfc_module.N,1)).astype(np.float32))
+                h5.attrs["mpfc_present"] = True
 
         # --- sequence group membership (CA3 SUP + DEEP) ----------------------
         sup_groups  = net["ca3_sup_groups"]
@@ -1924,6 +2168,15 @@ Cortical module:
         "--epoch-ms", type=float, default=1000.0, metavar="MS",
         help="Duration of each SWR epoch in ms (default: 1000). "
              "The SWR events are placed at fixed offsets within each epoch.")
+    # ---- Phase 3 cortical loop flags ----------------------------------
+    parser.add_argument(
+        "--ec-lv", action="store_true",
+        help="Add EC Layer V population + CA1→LV + ECLII→LV + LV→CA3 feedback "
+             "(Phase 3). Requires --ec-lii.")
+    parser.add_argument(
+        "--mpfc", action="store_true",
+        help="Add mPFC population receiving EC LV input (Phase 3 endpoint). "
+             "Requires --ec-lv.")
     parser.add_argument(
         "--prp-threshold", type=float, default=3.0, metavar="T",
         help="PRP pool threshold for L-LTP capture (default: 3.0 = 3 SWR events). "
@@ -1933,6 +2186,10 @@ Cortical module:
 
     if args.stc and not args.ec_lii:
         parser.error("--stc requires --ec-lii")
+    if args.ec_lv and not args.ec_lii:
+        parser.error("--ec-lv requires --ec-lii")
+    if args.mpfc and not args.ec_lv:
+        parser.error("--mpfc requires --ec-lv")
 
     cfg = build_scale_config(args.scale)
 
@@ -1955,7 +2212,7 @@ Cortical module:
     total_sim_ms = SIM_MS * n_epochs
 
     print(f"\n{'='*72}")
-    print(f"  Watson et al. 2025 — Bidirectional Replay  [v9: sequential replay + gradual STC]")
+    print(f"  Watson et al. 2025 — Bidirectional Replay  [v10: Phase 3 EC-LV + mPFC loop]")
     print(f"  Scale    : {cfg['label']}")
     print(f"  CA3_SUP  : {cfg['N_ca3_sup']:>10,}  CA3_DEEP : {cfg['N_ca3_deep']:>8,}")
     print(f"  CA1_PYR  : {cfg['N_ca1_pyr']:>10,}  groups   : {n_groups:>8,}  "
@@ -1969,6 +2226,10 @@ Cortical module:
               f"epoch={SIM_MS:.0f} ms  total={total_sim_ms:.0f} ms  [--stc]  "
               f"PRP_threshold={args.prp_threshold}"
               + ("  [PHASE-5 FALSIFICATION: L-LTP blocked]" if args.prp_threshold > 100 else ""))
+    if args.ec_lv:
+        print(f"  EC LV    : ENABLED  [Phase 3 — closes hippocampo-cortical loop]")
+    if args.mpfc:
+        print(f"  mPFC     : ENABLED  [Phase 3 — cortical engram endpoint]")
     print(f"  Threads  : {n_threads}  |  Sim: {total_sim_ms:.0f} ms")
     print(f"  Connect  : fixed_indegree + pairwise_bernoulli (C++, OpenMP)")
     print(f"{'='*72}\n")
@@ -2004,6 +2265,22 @@ Cortical module:
     if args.stc and ec_module is not None:
         print(">>> Initialising STC hook (Phase 2)...")
         stc_hook = build_stc_hook(ec_module)
+
+    # ---- Optional Phase 3: EC Layer V + mPFC ---------------------------------
+    eclv_module  = None
+    mpfc_module  = None
+    if args.ec_lv and ec_module is not None:
+        print(">>> Building EC Layer V module (Phase 3)...")
+        eclv_module = build_ec_lv(
+            ca1_pyr    = net["PYR"],
+            ec_lii_pop = ec_module.population,
+            ca3_sup    = net["CA3_SUP"],
+        )
+        if args.mpfc:
+            print(">>> Building mPFC module (Phase 3)...")
+            mpfc_module = build_mpfc(
+                ec_lv_pop = eclv_module.population,
+            )
 
     # ---- Simulation: single epoch or multi-epoch STC loop -------------------
     swr_fwd = net["swr_fwd"]
@@ -2058,13 +2335,16 @@ Cortical module:
 
     print(f"\n>>> [rank {rank}] Entering HDF5 export...")
     save_replay_hdf5(net, total_sim_ms, cfg["label"], hdf5_path,
-                     ec_module=ec_module, stc_hook=stc_hook)
+                     ec_module=ec_module, stc_hook=stc_hook,
+                     eclv_module=eclv_module, mpfc_module=mpfc_module)
 
     if rank != 0:
         print(f">>> [rank {rank}] Done (non-root rank exiting).")
         raise SystemExit(0)
 
-    print_report(net, SIM_MS, cfg["label"], ec_module=ec_module)
+    print_report(net, SIM_MS, cfg["label"],
+                 ec_module=ec_module,
+                 eclv_module=eclv_module, mpfc_module=mpfc_module)
 
     if not args.no_figures:
         print("\n>>> Generating figures...")

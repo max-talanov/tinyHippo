@@ -8,16 +8,21 @@
 #SBATCH --time=08:00:00
 #SBATCH --partition=gp_bsccs
 
-# Normal run:   sbatch --export=ALL,SCALE=12,N_SWR=14 run.sh
-# Phase 5 run:  sbatch --export=ALL,SCALE=12,N_SWR=14,PRP_THRESHOLD=999 run.sh
-# Quick test:   sbatch --export=ALL,SCALE=1,N_SWR=14 run.sh
+# Normal run (Phase 2 + Phase 3):
+#   sbatch --export=ALL,SCALE=12,N_SWR=14 run.sh
+# Phase 3 only (no STC):
+#   sbatch --export=ALL,SCALE=12,N_SWR=1,EC_LV=1,MPFC=1,NO_STC=1 run.sh
+# Phase 5 falsification:
+#   sbatch --export=ALL,SCALE=12,N_SWR=14,PRP_THRESHOLD=999 run.sh
+
 SCALE=${SCALE:-12}
 EC_LII_K=${EC_LII_K:-50}
-N_SWR=${N_SWR:-14}            # doubled 7→14: 28 total SWR events, gradual consolidation
+N_SWR=${N_SWR:-14}
 EPOCH_MS=${EPOCH_MS:-1000}
-PRP_THRESHOLD=${PRP_THRESHOLD:-14.0}  # raised to match N_SWR×2 ÷ ~1.7 occupancy
-                                       # EC fires in ~80-100% of events → crossing
-                                       # spreads over events 14-18 → ~4-event ramp
+PRP_THRESHOLD=${PRP_THRESHOLD:-14.0}
+EC_LV=${EC_LV:-1}      # 1=enable Phase 3 EC LV, 0=disable
+MPFC=${MPFC:-1}         # 1=enable mPFC module, 0=disable
+NO_STC=${NO_STC:-0}     # 1=skip STC hook (useful for Phase 3-only runs)
 OUTDIR="results"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -32,7 +37,8 @@ export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 
 echo "[Slurm] job=$SLURM_JOB_ID  ntasks=$SLURM_NTASKS  cpus-per-task=$SLURM_CPUS_PER_TASK"
-echo "[Slurm] scale=${SCALE}%  ec_lii_k=$EC_LII_K  n_swr=$N_SWR  epoch_ms=$EPOCH_MS  prp_threshold=$PRP_THRESHOLD"
+echo "[Slurm] scale=${SCALE}%  n_swr=$N_SWR  epoch_ms=$EPOCH_MS  prp_threshold=$PRP_THRESHOLD"
+echo "[Slurm] ec_lv=${EC_LV}  mpfc=${MPFC}  no_stc=${NO_STC}"
 
 python3 - <<'PY'
 import nest
@@ -44,22 +50,27 @@ PY
 
 mkdir -p "$OUTDIR"
 
-if python3 -c "import sys; sys.exit(0 if float('${PRP_THRESHOLD}') > 100 else 1)" 2>/dev/null; then
-    OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc_ph5_block.h5"
-    echo "[Slurm] PHASE 5 FALSIFICATION RUN — L-LTP blocked (PRP_threshold=${PRP_THRESHOLD})"
-else
-    OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc.h5"
-fi
+# Tag output filename with active phases
+PHASE_TAG=""
+[ "$EC_LV" = "1" ]  && PHASE_TAG="${PHASE_TAG}_lv"
+[ "$MPFC"  = "1" ]  && PHASE_TAG="${PHASE_TAG}_mpfc"
+[ "${PRP_THRESHOLD%.*}" -gt 100 ] 2>/dev/null && PHASE_TAG="${PHASE_TAG}_ph5"
+
+OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc${PHASE_TAG}.h5"
+echo "[Slurm] output → $OUTFILE"
+
+# Build optional flag list
+OPTIONAL_FLAGS=""
+[ "$NO_STC" != "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --stc --n-swr $N_SWR --epoch-ms $EPOCH_MS --prp-threshold $PRP_THRESHOLD"
+[ "$EC_LV"  = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --ec-lv"
+[ "$MPFC"   = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --mpfc"
 
 srun --cpu-bind=cores \
   python3 -u "replay_scaled.py" \
-    --scale         "$SCALE" \
-    --threads       "$SLURM_CPUS_PER_TASK" \
-    --out-hdf5      "$OUTFILE" \
+    --scale       "$SCALE" \
+    --threads     "$SLURM_CPUS_PER_TASK" \
+    --out-hdf5    "$OUTFILE" \
     --ec-lii \
-    --ec-lii-k      "$EC_LII_K" \
-    --stc \
-    --n-swr         "$N_SWR" \
-    --epoch-ms      "$EPOCH_MS" \
-    --prp-threshold "$PRP_THRESHOLD" \
+    --ec-lii-k    "$EC_LII_K" \
+    $OPTIONAL_FLAGS \
     --no-figures
