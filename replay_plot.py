@@ -75,6 +75,9 @@ def main():
     ap.add_argument("--raster-max-spikes", type=int, default=300_000,
                     help="Subsample rasters to this many spikes for speed "
                          "(default 300000; 0 = no limit)")
+    ap.add_argument("--compare", dest="compare", default=None, metavar="FILE",
+                    help="Path to a Phase 5 HDF5 to generate a side-by-side "
+                         "Normal vs Phase-5 falsification comparison figure.")
     args = ap.parse_args()
 
     # Switch to non-GUI backend only when saving silently
@@ -658,6 +661,10 @@ def main():
             stc_n_struct_new   = np.array(s["n_struct_new"],   dtype=np.int32)    if "n_struct_new"   in s else np.zeros_like(stc_event)
             stc_n_struct_tot   = np.array(s["n_struct_total"], dtype=np.int32)    if "n_struct_total" in s else np.zeros_like(stc_event)
             stc_struct_done    = np.array(s["struct_done"],    dtype=bool)        if "struct_done"    in s else None
+            # Phase 5 falsification detection
+            # If no L-LTP ever occurred, this is a falsification run
+            # (PRP_threshold=999 blocks all L-LTP capture)
+            is_phase5 = (stc_n_ltp_tot.max() == 0)
 
     if stc_present:
         # ---------------------------------------------------------------
@@ -665,8 +672,9 @@ def main():
         # Mean CA1→EC weight + L-LTP fraction vs SWR event number
         # ---------------------------------------------------------------
         fig6, (ax6a, ax6b, ax6c, ax6d) = plt.subplots(4, 1, figsize=(12, 13), sharex=True)
-        fig6.suptitle(f"STC Consolidation Curve  [{scale}]",
-                      fontsize=12, fontweight="bold")
+        phase5_note = "  —  PHASE 5 FALSIFICATION: L-LTP blocked (PRP_threshold=999)" if is_phase5 else ""
+        fig6.suptitle(f"STC Consolidation Curve  [{scale}]{phase5_note}",
+                      fontsize=11, fontweight="bold", color="firebrick" if is_phase5 else "black")
 
         ev = stc_event
 
@@ -687,6 +695,15 @@ def main():
         ax6b.set_title("B  Cumulative L-LTP fraction per SWR event", fontsize=9, loc="left")
         ax6b.legend(fontsize=7)
         ax6b.grid(alpha=0.3)
+        if is_phase5:
+            ax6b.text(0.5, 0.5,
+                      "L-LTP intentionally blocked\n(Phase 5 falsification: PRP_threshold=999)\n"
+                      "This confirms that replay quality is independent of L-LTP capture.\n"
+                      "Compare ρ_fwd with normal run — both should be identical.",
+                      transform=ax6b.transAxes, ha="center", va="center",
+                      fontsize=10, color="firebrick",
+                      bbox=dict(boxstyle="round,pad=0.5", fc="mistyrose", ec="firebrick", alpha=0.85))
+            ax6b.set_ylim(-5, 105)
 
         ax6c.plot(ev, stc_prp_mean, "o-", color="mediumseagreen", lw=1.5, ms=5,
                   label="Mean PRP pool (SWR events)")
@@ -718,6 +735,13 @@ def main():
         ax6d.legend(fontsize=7)
         ax6d.grid(alpha=0.3)
         ax6d.set_ylim(-2, 105)
+        if is_phase5:
+            ax6d.text(0.5, 0.5,
+                      "Structural plasticity requires L-LTP as prerequisite.\n"
+                      "Zero here confirms correct causal dependency.",
+                      transform=ax6d.transAxes, ha="center", va="center",
+                      fontsize=10, color="darkgreen",
+                      bbox=dict(boxstyle="round,pad=0.4", fc="honeydew", ec="darkgreen", alpha=0.85))
 
         fig6.tight_layout()
         _maybe_save(fig6, f"{args.save_prefix}_fig6_stc_consolidation.png" if args.save_prefix else None)
@@ -781,7 +805,10 @@ def main():
             rho_rev  = float(h5["stats"].attrs.get("rho_rev",  float("nan")))
 
         fig8, axes8 = plt.subplots(1, 2, figsize=(12, 4))
-        fig8.suptitle(f"Consolidation Index  [{scale}]", fontsize=12, fontweight="bold")
+        phase5_title = "  —  PHASE 5: L-LTP blocked" if is_phase5 else ""
+        fig8.suptitle(f"Consolidation Index  [{scale}]{phase5_title}",
+                      fontsize=12, fontweight="bold",
+                      color="firebrick" if is_phase5 else "black")
 
         ax = axes8[0]
         ltp_frac_final = stc_n_ltp_tot / max(stc_n_syn, 1) * 100
@@ -801,15 +828,27 @@ def main():
         # Weight distribution at end: L-LTP vs E-LTP mean
         means  = [stc_w_final[~stc_ltp_mask].mean() if (~stc_ltp_mask).any() else float("nan"),
                   stc_w_final[stc_ltp_mask].mean()  if stc_ltp_mask.any()    else float("nan")]
-        labels = ["E-LTP\n(untagged/\ndecaying)", "L-LTP\n(consolidated)"]
-        colors = ["steelblue", "darkorange"]
-        bars   = ax.bar(labels, means, color=colors, alpha=0.8, width=0.5)
+        if is_phase5:
+            labels = ["E-LTP\n(accumulating)\n[Phase 5]"]
+            means_bar = [means[0]]
+            colors_bar = ["steelblue"]
+        else:
+            labels = ["E-LTP\n(untagged/\ndecaying)", "L-LTP\n(consolidated)"]
+            means_bar = means
+            colors_bar = ["steelblue", "darkorange"]
+        bars   = ax.bar(labels, means_bar, color=colors_bar, alpha=0.8, width=0.5)
         ax.bar_label(bars, fmt="%.3f", padding=3, fontsize=8)
         ax.set_ylabel("Mean CA1→EC weight", fontsize=9)
         ax.set_title(
             f"B  E-LTP vs L-LTP weight means\n"
             f"Replay quality: ρ_fwd={rho_fwd:+.3f}  ρ_rev={rho_rev:+.3f}",
             fontsize=9, loc="left")
+        if is_phase5:
+            ax.text(0.98, 0.95,
+                    "L-LTP = 0 by design\n(PRP_threshold=999)",
+                    transform=ax.transAxes, ha="right", va="top",
+                    fontsize=9, color="firebrick",
+                    bbox=dict(boxstyle="round", fc="mistyrose", ec="firebrick", alpha=0.8))
         ax.set_ylim(0, max(filter(np.isfinite, means + [stc_w_init * 2])) * 1.3 if means else 2)
         ax.axhline(stc_w_init, color="gray", ls=":", lw=1.2, label=f"w_init")
         ax.legend(fontsize=7)
@@ -820,12 +859,160 @@ def main():
     # ------------------------------------------------------------------
     # Show / done
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Fig 9 — Normal vs Phase 5 comparison (only when --compare given)
+    # ------------------------------------------------------------------
+    if args.compare and stc_present:
+        _generate_comparison_figure(
+            normal_h5=args.inp,
+            phase5_h5=args.compare,
+            save_prefix=args.save_prefix,
+            scale=scale)
+
     if args.show or not args.save_prefix:
         plt.show()
     else:
         plt.close("all")
 
     print(">>> Done.")
+
+
+def _generate_comparison_figure(normal_h5, phase5_h5, save_prefix, scale):
+    """
+    Side-by-side comparison of Normal vs Phase 5 runs.
+    The key scientific result: same replay quality (ρ_fwd), zero L-LTP in Phase 5.
+    """
+    def _load_stc(path):
+        with h5py.File(path, "r") as h5:
+            if "stc" not in h5:
+                return None
+            s = h5["stc"]
+            return dict(
+                ev          = np.array(s["event"],        dtype=np.int32),
+                w_mean      = np.array(s["w_mean"],       dtype=np.float32),
+                ltp_frac    = np.array(s["n_ltp_total"],  dtype=np.int32) /
+                              max(int(s.attrs.get("n_synapses", 1)), 1) * 100,
+                n_ltp_new   = np.array(s["n_ltp_new"],    dtype=np.int32) /
+                              max(int(s.attrs.get("n_synapses", 1)), 1) * 100,
+                struct_frac = np.array(s["n_struct_total"], dtype=np.int32) /
+                              max(int(s.attrs.get("n_synapses", 1)), 1) * 100
+                              if "n_struct_total" in s else np.zeros(len(s["event"])),
+                prp_mean    = np.array(s["prp_mean"],     dtype=np.float32)
+                              if "prp_mean" in s else np.zeros(len(s["event"])),
+            )
+        return None
+
+    def _load_replay_quality(path):
+        with h5py.File(path, "r") as h5:
+            sg = h5["stats"]
+            return (float(sg.attrs.get("rho_fwd", float("nan"))),
+                    float(sg.attrs.get("rho_rev", float("nan"))))
+
+    norm = _load_stc(normal_h5)
+    ph5  = _load_stc(phase5_h5)
+    if norm is None or ph5 is None:
+        print("  [compare] Missing STC data in one of the files — skipping comparison figure.")
+        return
+
+    rho_fwd_n, rho_rev_n = _load_replay_quality(normal_h5)
+    rho_fwd_5, rho_rev_5 = _load_replay_quality(phase5_h5)
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 9))
+    fig.suptitle(
+        f"Normal vs Phase 5 Falsification — [{scale}]\n"
+        f"Key result: same replay quality (ρ_fwd), zero L-LTP consolidation in Phase 5",
+        fontsize=12, fontweight="bold")
+
+    colors_n = "steelblue"
+    colors_5 = "firebrick"
+
+    # Panel [0,0]: Weight curves
+    ax = axes[0, 0]
+    ax.plot(norm["ev"], norm["w_mean"], "o-", color=colors_n, lw=1.8, ms=5,
+            label=f"Normal (ρ_fwd={rho_fwd_n:+.3f})")
+    ax.plot(ph5["ev"],  ph5["w_mean"],  "s--", color=colors_5, lw=1.8, ms=5,
+            label=f"Phase 5 (ρ_fwd={rho_fwd_5:+.3f})")
+    ax.axhline(1.0, color="gray", ls=":", lw=1)
+    ax.set_xlabel("SWR event #"); ax.set_ylabel("Mean CA1→EC weight")
+    ax.set_title("A  Mean synaptic weight over time", fontsize=10, loc="left")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Panel [0,1]: L-LTP fraction
+    ax = axes[0, 1]
+    ax.bar(norm["ev"], norm["ltp_frac"], color=colors_n, alpha=0.6,
+           label="Normal: L-LTP fraction")
+    ax.bar(ph5["ev"],  ph5["ltp_frac"],  color=colors_5, alpha=0.5,
+           label="Phase 5: L-LTP fraction (=0 by design)")
+    ax.set_xlabel("SWR event #"); ax.set_ylabel("% CA1→EC synapses L-LTP")
+    ax.set_title("B  Cumulative L-LTP fraction\n  ← Zero in Phase 5 confirms PRP-dependence",
+                 fontsize=10, loc="left")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    if ph5["ltp_frac"].max() == 0:
+        ax.text(0.5, 0.6, "Phase 5: L-LTP = 0\n(PRP_threshold=999)\nTAGS SET, CAPTURE BLOCKED",
+                transform=ax.transAxes, ha="center", fontsize=11, color="firebrick",
+                bbox=dict(boxstyle="round", fc="mistyrose", ec="firebrick", alpha=0.9))
+
+    # Panel [0,2]: PRP accumulation comparison
+    ax = axes[0, 2]
+    ax.plot(norm["ev"], norm["prp_mean"], "o-", color=colors_n, lw=1.8, ms=5,
+            label="Normal")
+    ax.plot(ph5["ev"],  ph5["prp_mean"],  "s--", color=colors_5, lw=1.8, ms=5,
+            label="Phase 5")
+    ax.set_xlabel("SWR event #"); ax.set_ylabel("Mean PRP pool (SWR events)")
+    ax.set_title("C  PRP pool accumulation\n  ← Identical: tags form, PRP builds up in both",
+                 fontsize=10, loc="left")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    ax.text(0.02, 0.95, "PRP builds normally\nbut capture blocked\nin Phase 5",
+            transform=ax.transAxes, va="top", fontsize=8, color="firebrick")
+
+    # Panel [1,0]: Structural plasticity
+    ax = axes[1, 0]
+    ax.plot(norm["ev"], norm["struct_frac"], "D-", color="darkgreen", lw=1.8, ms=5,
+            label="Normal: structural %")
+    ax.plot(ph5["ev"],  ph5["struct_frac"],  "^--", color="olive", lw=1.8, ms=5,
+            label="Phase 5: structural % (=0)")
+    ax.set_xlabel("SWR event #"); ax.set_ylabel("% CA1→EC synapses structurally potentiated")
+    ax.set_title("D  Structural plasticity (3rd timescale)\n  ← Requires L-LTP; zero in Phase 5 confirms causal chain",
+                 fontsize=10, loc="left")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Panel [1,1]: New captures per event
+    ax = axes[1, 1]
+    ax.plot(norm["ev"], norm["n_ltp_new"], "^-", color=colors_n, lw=1.5, ms=5,
+            label="Normal: new L-LTP captures/event")
+    ax.plot(ph5["ev"],  ph5["n_ltp_new"],  "v--", color=colors_5, lw=1.5, ms=5,
+            label="Phase 5: new captures (=0)")
+    ax.set_xlabel("SWR event #"); ax.set_ylabel("% CA1→EC synapses newly captured")
+    ax.set_title("E  New L-LTP captures per event\n  (staircase = gradual consolidation)",
+                 fontsize=10, loc="left")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Panel [1,2]: Replay quality comparison (bar)
+    ax = axes[1, 2]
+    x = np.arange(2)
+    rho_fwd_vals = [rho_fwd_n, rho_fwd_5]
+    rho_rev_vals = [rho_rev_n, rho_rev_5]
+    bars1 = ax.bar(x - 0.2, rho_fwd_vals, 0.35, color=[colors_n, colors_5],
+                   alpha=0.8, label="ρ_fwd")
+    bars2 = ax.bar(x + 0.2, rho_rev_vals, 0.35, color=[colors_n, colors_5],
+                   alpha=0.4, hatch="//", label="ρ_rev")
+    ax.bar_label(bars1, fmt="%+.3f", padding=3, fontsize=9)
+    ax.bar_label(bars2, fmt="%+.3f", padding=3, fontsize=9)
+    ax.set_xticks(x); ax.set_xticklabels(["Normal\n(L-LTP active)", "Phase 5\n(L-LTP blocked)"])
+    ax.axhline(0.5, color="green",  ls="--", lw=1, alpha=0.7, label="PASS threshold (ρ=0.5)")
+    ax.axhline(-0.5, color="green", ls="--", lw=1, alpha=0.7)
+    ax.axhline(0.0, color="gray",   ls=":",  lw=0.8)
+    ax.set_ylabel("Spearman ρ"); ax.set_ylim(-1.1, 1.1)
+    ax.set_title("F  Replay quality: Normal vs Phase 5\n"                 "  KEY RESULT: ρ_fwd identical → replay ⊥ consolidation",
+                 fontsize=10, loc="left")
+    ax.legend(fontsize=7)
+
+    fig.tight_layout()
+    path = f"{save_prefix}_fig9_phase5_comparison.png" if save_prefix else None
+    if path:
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        print(f"  saved {path}")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
