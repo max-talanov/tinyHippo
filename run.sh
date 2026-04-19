@@ -8,12 +8,15 @@
 #SBATCH --time=08:00:00
 #SBATCH --partition=gp_bsccs
 
-# Normal run (Phase 2 + Phase 3):
-#   sbatch --export=ALL,SCALE=12,N_SWR=14 run.sh
-# Phase 3 only (no STC):
-#   sbatch --export=ALL,SCALE=12,N_SWR=1,EC_LV=1,MPFC=1,NO_STC=1 run.sh
-# Phase 5 falsification:
-#   sbatch --export=ALL,SCALE=12,N_SWR=14,PRP_THRESHOLD=999 run.sh
+# Standard Phase 2+3 run (default)
+#  sbatch --export=ALL,SCALE=12,N_SWR=14 run.sh
+
+# Phase 3 only (no STC consolidation, fast run for testing the loop)
+#  sbatch --export=ALL,SCALE=12,N_SWR=1,NO_STC=1 run.sh
+
+# Phase 5 falsification with Phase 3
+#  sbatch --export=ALL,SCALE=12,N_SWR=14,PRP_THRESHOLD=999 run.sh
+
 
 SCALE=${SCALE:-12}
 EC_LII_K=${EC_LII_K:-50}
