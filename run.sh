@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=50
-#SBATCH --time=08:00:00
+#SBATCH --time=16:00:00
 #SBATCH --partition=gp_bsccs
 
 # Standard Phase 2+3 run (default)
@@ -18,7 +18,7 @@
 #  sbatch --export=ALL,SCALE=12,N_SWR=14,PRP_THRESHOLD=999 run.sh
 
 
-SCALE=${SCALE:-12}
+SCALE=${SCALE:-25}
 EC_LII_K=${EC_LII_K:-50}
 N_SWR=${N_SWR:-14}
 EPOCH_MS=${EPOCH_MS:-1000}
