@@ -26,6 +26,8 @@ PRP_THRESHOLD=${PRP_THRESHOLD:-14.0}
 EC_LV=${EC_LV:-1}      # 1=enable Phase 3 EC LV, 0=disable
 MPFC=${MPFC:-1}         # 1=enable mPFC module, 0=disable
 NO_STC=${NO_STC:-0}     # 1=skip STC hook (useful for Phase 3-only runs)
+HOMEOSTASIS=${HOMEOSTASIS:-0}  # 1=enable Phase 4 synaptic homeostasis
+HOMEO_ALPHA=${HOMEO_ALPHA:-0.75}  # downscaling factor (default 0.75)
 OUTDIR="results"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -41,7 +43,7 @@ export OMP_PLACES=cores
 
 echo "[Slurm] job=$SLURM_JOB_ID  ntasks=$SLURM_NTASKS  cpus-per-task=$SLURM_CPUS_PER_TASK"
 echo "[Slurm] scale=${SCALE}%  n_swr=$N_SWR  epoch_ms=$EPOCH_MS  prp_threshold=$PRP_THRESHOLD"
-echo "[Slurm] ec_lv=${EC_LV}  mpfc=${MPFC}  no_stc=${NO_STC}"
+echo "[Slurm] ec_lv=${EC_LV}  mpfc=${MPFC}  no_stc=${NO_STC}  homeostasis=${HOMEOSTASIS}  homeo_alpha=${HOMEO_ALPHA}"
 
 python3 - <<'PY'
 import nest
@@ -58,6 +60,7 @@ PHASE_TAG=""
 [ "$EC_LV" = "1" ]  && PHASE_TAG="${PHASE_TAG}_lv"
 [ "$MPFC"  = "1" ]  && PHASE_TAG="${PHASE_TAG}_mpfc"
 [ "${PRP_THRESHOLD%.*}" -gt 100 ] 2>/dev/null && PHASE_TAG="${PHASE_TAG}_ph5"
+[ "$HOMEOSTASIS" = "1" ] && PHASE_TAG="${PHASE_TAG}_ph4"
 
 OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc${PHASE_TAG}.h5"
 echo "[Slurm] output → $OUTFILE"
@@ -67,6 +70,7 @@ OPTIONAL_FLAGS=""
 [ "$NO_STC" != "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --stc --n-swr $N_SWR --epoch-ms $EPOCH_MS --prp-threshold $PRP_THRESHOLD"
 [ "$EC_LV"  = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --ec-lv"
 [ "$MPFC"   = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --mpfc"
+[ "$HOMEOSTASIS" = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --homeostasis --homeo-alpha $HOMEO_ALPHA"
 
 srun --cpu-bind=cores \
   python3 -u "replay_scaled.py" \

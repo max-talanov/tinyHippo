@@ -1642,6 +1642,115 @@ def run_stc_hook(
 
 
 # ============================================================================
+# Phase 4 — Synaptic Homeostasis
+# ============================================================================
+
+def build_homeostasis_hook(net, alpha: float = 0.75):
+    """
+    Cache Schaffer collateral and CA3 recurrent connection arrays for
+    Phase 4 synaptic downscaling.  Call once after all SWR epochs complete.
+
+    alpha : multiplicative downscaling factor for hippocampal synapses.
+            Biology: ~0.75 per sleep night (Vyazovskiy et al. 2008).
+            L-LTP synapses in CA1->EC are NOT touched here — they live in
+            the STC hook and represent the consolidated cortical trace.
+
+    Returns a plain dict with pre-downscaling weights and NEST connection
+    objects so run_homeostasis_hook() can apply and verify the changes.
+    """
+    import dataclasses
+
+    @dataclasses.dataclass
+    class HomeoHook:
+        alpha:          float
+        # Schaffer collaterals CA3_SUP -> CA1_PYR
+        sch_conns:      object          # NEST ConnectionCollection
+        sch_w_pre:      np.ndarray      # weights before downscaling (copy)
+        sch_w:          np.ndarray      # live weight array (modified in-place)
+        n_sch:          int
+        # CA3 recurrent excitatory (CA3_SUP -> CA3_SUP, w > 0)
+        ca3_conns:      object
+        ca3_exc_mask:   np.ndarray      # boolean mask: excitatory synapses
+        ca3_w_pre:      np.ndarray      # weights before (full array, copy)
+        ca3_w:          np.ndarray      # live weight array
+        n_ca3_exc:      int
+
+    print("  [homeo] Querying Schaffer collaterals (CA3_SUP → CA1_PYR)...")
+    sch_conns = nest.GetConnections(net["CA3_SUP"], net["PYR"])
+    sch_d     = sch_conns.get(["weight"])
+    sch_w     = np.array(sch_d["weight"], dtype=float)
+
+    print("  [homeo] Querying CA3 recurrent connections (CA3_SUP → CA3_SUP)...")
+    ca3_conns    = nest.GetConnections(net["CA3_SUP"], net["CA3_SUP"])
+    ca3_d        = ca3_conns.get(["weight"])
+    ca3_w        = np.array(ca3_d["weight"], dtype=float)
+    ca3_exc_mask = ca3_w > 0
+
+    hook = HomeoHook(
+        alpha         = alpha,
+        sch_conns     = sch_conns,
+        sch_w_pre     = sch_w.copy(),
+        sch_w         = sch_w,
+        n_sch         = len(sch_w),
+        ca3_conns     = ca3_conns,
+        ca3_exc_mask  = ca3_exc_mask,
+        ca3_w_pre     = ca3_w.copy(),
+        ca3_w         = ca3_w,
+        n_ca3_exc     = int(ca3_exc_mask.sum()),
+    )
+
+    print(f"  [homeo] Cached {hook.n_sch:,} Schaffer + "
+          f"{hook.n_ca3_exc:,} CA3-exc synapses  (alpha={alpha:.2f})")
+    return hook
+
+
+def run_homeostasis_hook(homeo):
+    """
+    Apply multiplicative downscaling (×alpha) to all non-L-LTP hippocampal
+    synapses:
+      • All Schaffer collateral weights (CA3_SUP → CA1_PYR)
+      • Excitatory CA3 recurrent weights (CA3_SUP → CA3_SUP, w > 0)
+    Inhibitory weights (w < 0) are left unchanged.
+    A floor of 0.01 prevents weights from collapsing to zero.
+
+    After writing back via NEST SetConnections, returns a stats dict
+    for HDF5 logging and console reporting.
+    """
+    alpha = homeo.alpha
+
+    # -- Schaffer collaterals: all excitatory, downscale uniformly --
+    homeo.sch_w[:] = np.maximum(homeo.sch_w * alpha, 0.01)
+    homeo.sch_conns.set({"weight": homeo.sch_w.tolist()})
+
+    # -- CA3 recurrent: excitatory only --
+    homeo.ca3_w[homeo.ca3_exc_mask] = np.maximum(
+        homeo.ca3_w[homeo.ca3_exc_mask] * alpha, 0.01)
+    homeo.ca3_conns.set({"weight": homeo.ca3_w.tolist()})
+
+    stats = {
+        "alpha":              alpha,
+        # Schaffer
+        "sch_w_pre_mean":     float(homeo.sch_w_pre.mean()),
+        "sch_w_post_mean":    float(homeo.sch_w.mean()),
+        "sch_w_pre_std":      float(homeo.sch_w_pre.std()),
+        "sch_w_post_std":     float(homeo.sch_w.std()),
+        "n_sch_synapses":     homeo.n_sch,
+        # CA3 recurrent (excitatory only)
+        "ca3_w_pre_mean":     float(homeo.ca3_w_pre[homeo.ca3_exc_mask].mean()),
+        "ca3_w_post_mean":    float(homeo.ca3_w[homeo.ca3_exc_mask].mean()),
+        "ca3_w_pre_std":      float(homeo.ca3_w_pre[homeo.ca3_exc_mask].std()),
+        "ca3_w_post_std":     float(homeo.ca3_w[homeo.ca3_exc_mask].std()),
+        "n_ca3_exc_synapses": homeo.n_ca3_exc,
+    }
+
+    print(f"  [homeo] Schaffer:  {stats['sch_w_pre_mean']:.4f}±{stats['sch_w_pre_std']:.4f}"
+          f" → {stats['sch_w_post_mean']:.4f}±{stats['sch_w_post_std']:.4f}  (×{alpha:.2f})")
+    print(f"  [homeo] CA3 exc:   {stats['ca3_w_pre_mean']:.4f}±{stats['ca3_w_pre_std']:.4f}"
+          f" → {stats['ca3_w_post_mean']:.4f}±{stats['ca3_w_post_std']:.4f}  (×{alpha:.2f})")
+    return stats
+
+
+# ============================================================================
 # Replay quality metric
 # ============================================================================
 
@@ -1858,7 +1967,8 @@ def print_report(net, sim_ms, scale_label, ec_module=None, eclv_module=None, mpf
 
 def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
                      ec_module=None, stc_hook=None,
-                     eclv_module=None, mpfc_module=None):
+                     eclv_module=None, mpfc_module=None,
+                     homeo_stats=None):
     """
     Save all simulation results to an HDF5 file for offline plotting.
 
@@ -2095,6 +2205,21 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             print(f"  [HDF5] STC history: {stc_hook.n_calls} events, "
                   f"{int(stc_hook.ltp_done.sum()):,} L-LTP synapses")
 
+        # ---- Phase 4: Homeostasis group ------------------------------------
+        if homeo_stats is not None:
+            hg = h5.create_group("homeostasis")
+            for k, v in homeo_stats.items():
+                hg.attrs[k] = float(v)
+            hg.attrs["description"] = (
+                "Phase 4 synaptic homeostasis: multiplicative downscaling of "
+                "Schaffer collateral and CA3 recurrent excitatory weights "
+                "after all SWR epochs. L-LTP synapses in CA1->EC are exempt. "
+                "rho_fwd/rev_post_homeo = replay quality in verification epoch "
+                "immediately after downscaling.")
+            print(f"  [HDF5] Homeostasis: alpha={homeo_stats['alpha']:.2f}  "
+                  f"Schaffer {homeo_stats['sch_w_pre_mean']:.4f}→{homeo_stats['sch_w_post_mean']:.4f}  "
+                  f"ρ_fwd_post={homeo_stats.get('rho_fwd_post_homeo', float('nan')):+.3f}")
+
     print(f">>> Saved HDF5: {outpath}")
 
 
@@ -2182,6 +2307,20 @@ Cortical module:
         help="PRP pool threshold for L-LTP capture (default: 3.0 = 3 SWR events). "
              "Set to 999 for Phase 5 falsification experiment (blocks L-LTP while "
              "preserving E-LTP and tagging, isolating replay from consolidation).")
+    # ---- Phase 4 homeostasis flags ------------------------------------------
+    parser.add_argument(
+        "--homeostasis", action="store_true",
+        help="Enable Phase 4 synaptic homeostasis: after all SWR epochs, "
+             "multiplicatively downscale Schaffer collateral and CA3 recurrent "
+             "excitatory weights by --homeo-alpha, then run one verification "
+             "epoch to confirm the cortical (EC) trace survives hippocampal "
+             "downscaling. Requires --stc.")
+    parser.add_argument(
+        "--homeo-alpha", type=float, default=0.75, metavar="A",
+        help="Downscaling factor for Phase 4 homeostasis (default: 0.75). "
+             "Biology: ~0.75 per sleep night (Vyazovskiy et al. 2008). "
+             "Applied multiplicatively to all Schaffer and CA3 exc synapses. "
+             "L-LTP synapses in CA1->EC are exempt.")
     args = parser.parse_args()
 
     if args.stc and not args.ec_lii:
@@ -2190,6 +2329,8 @@ Cortical module:
         parser.error("--ec-lv requires --ec-lii")
     if args.mpfc and not args.ec_lv:
         parser.error("--mpfc requires --ec-lv")
+    if args.homeostasis and not args.stc:
+        parser.error("--homeostasis requires --stc (Phase 2 must be active)")
 
     cfg = build_scale_config(args.scale)
 
@@ -2319,6 +2460,68 @@ Cortical module:
 
     print(f"    Total simulation done in {time.perf_counter()-t_sim:.1f}s")
 
+    # ---- Phase 4: Synaptic Homeostasis (after all SWR epochs) ---------------
+    homeo_stats       = None
+    homeo_post_rho_fwd = None
+    homeo_post_rho_rev = None
+    if args.homeostasis and stc_hook is not None:
+        print("\n>>> Phase 4: Synaptic homeostasis — downscaling hippocampal weights...")
+        homeo      = build_homeostasis_hook(net, alpha=args.homeo_alpha)
+        homeo_stats = run_homeostasis_hook(homeo)
+
+        # Verification epoch: one additional SWR pair after downscaling
+        # Measures whether CA3 replay quality degrades (expected) while
+        # EC LII weights (already L-LTP captured) remain unchanged (expected).
+        print(f"\n>>> Phase 4: Running post-homeostasis verification epoch "
+              f"({SIM_MS:.0f} ms)...")
+        t_verify = time.perf_counter()
+        nest.Simulate(SIM_MS)
+        epoch_t0_verify = n_epochs * SIM_MS
+        if stc_hook is not None:
+            run_stc_hook(
+                stc_hook, ec_module,
+                t_swr_start   = epoch_t0_verify + swr_fwd[0],
+                t_swr_end     = epoch_t0_verify + swr_fwd[1],
+                current_t_ms  = epoch_t0_verify + SIM_MS,
+                PRP_threshold = args.prp_threshold,
+            )
+            run_stc_hook(
+                stc_hook, ec_module,
+                t_swr_start   = epoch_t0_verify + swr_rev[0],
+                t_swr_end     = epoch_t0_verify + swr_rev[1],
+                current_t_ms  = epoch_t0_verify + SIM_MS,
+                PRP_threshold = args.prp_threshold,
+            )
+        print(f"    Verification epoch done in {time.perf_counter()-t_verify:.1f}s")
+
+        # Compute replay quality in the verification epoch
+        from nest import GetStatus as _gs
+        _ev3 = _gs(net["spk_ca3_sup"], "events")[0]
+        _t3  = np.array(_ev3["times"],   dtype=float)
+        _s3  = np.array(_ev3["senders"], dtype=int)
+        # Restrict to verification epoch window
+        _t0v = epoch_t0_verify
+        _rho_f, _pf = replay_score(_t3, _s3, net["ca3_seq_groups"],
+                                    _t0v + swr_fwd[0] - 5,
+                                    _t0v + swr_fwd[1] + 30)
+        _rho_r, _pr = replay_score(_t3, _s3, net["ca3_seq_groups"],
+                                    _t0v + swr_rev[0] - 5,
+                                    _t0v + swr_rev[1] + 30)
+        homeo_post_rho_fwd = float(_rho_f) if _rho_f is not None else float("nan")
+        homeo_post_rho_rev = float(_rho_r) if _rho_r is not None else float("nan")
+        homeo_stats["rho_fwd_post_homeo"] = homeo_post_rho_fwd
+        homeo_stats["rho_rev_post_homeo"] = homeo_post_rho_rev
+
+        print(f"\n  [homeo] Post-homeostasis replay quality:")
+        print(f"    ρ_fwd = {homeo_post_rho_fwd:+.3f}  "
+              f"(pre-homeo: {stc_hook.rho_history_fwd[-1] if hasattr(stc_hook, 'rho_history_fwd') and stc_hook.rho_history_fwd else 'N/A'})")
+        print(f"    ρ_rev = {homeo_post_rho_rev:+.3f}")
+        print(f"  [homeo] EC LII CA1→EC mean weight (should remain at L-LTP level): "
+              f"{float(stc_hook.w.mean()):.4f}")
+
+        # Extend total_sim_ms to include verification epoch
+        total_sim_ms += SIM_MS
+
     rank = _mpi_rank()
 
     # ---- HDF5 export ---------------------------------------------------------
@@ -2336,7 +2539,8 @@ Cortical module:
     print(f"\n>>> [rank {rank}] Entering HDF5 export...")
     save_replay_hdf5(net, total_sim_ms, cfg["label"], hdf5_path,
                      ec_module=ec_module, stc_hook=stc_hook,
-                     eclv_module=eclv_module, mpfc_module=mpfc_module)
+                     eclv_module=eclv_module, mpfc_module=mpfc_module,
+                     homeo_stats=homeo_stats)
 
     if rank != 0:
         print(f">>> [rank {rank}] Done (non-root rank exiting).")
