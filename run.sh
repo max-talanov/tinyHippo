@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=50
-#SBATCH --time=16:00:00
+#SBATCH --time=20:00:00
 #SBATCH --partition=gp_bsccs
 
 # Standard Phase 2+3 run (default)
