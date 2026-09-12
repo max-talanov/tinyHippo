@@ -54,14 +54,15 @@ consolidation and their  identification linked
 to their position in the neuron architecture.
 
 The diagram has two layers
-1) The temporal dynamics of the **dendritic 
+1) **(A)** The temporal dynamics of the 
+**dendritic 
    spikes propagation** and through dendritic 
    tree on the level of synaptic areas, 
    dendroids junctions and soma and the 
    timeframes of dendritic spikes processing: 
    synaptic areas (1ms), junctions (5-10ms), 
    generation of somatic spikes (5-10ms).
-2) The learning mechanisms described in 
+2) **(B)** The learning mechanisms described in 
    sections: **Consolidation timescales** and 
    **Synaptic tagging** mapped to the neuronal 
    areas. **Synaptic areas**: synaptic homeostasis 
@@ -70,12 +71,22 @@ The diagram has two layers
    **Soma**: E-LTP, L-LTP, replay and memory 
    consolidation on the level of network.  
 
-The companion hardware document frames dendritic 
+**(A)** The companion hardware document frames 
+dendritic 
 processing as a three-stage information-reduction 
 pipeline — a postsynaptic threshold, an OR-gated 
 refractory junction, and a somatic summation each 
 stage a candidate site for replacing an expensive 
 analog circuit with a cheap thresholding one.
+
+**(B)** Indicate the two inputs synaptic 
+devices with excitatory input and 
+neuromodulatory input for the groups of the 
+synaptic devices, that triggers the tagging 
+processes; junction implemented as 
+described above; soma implements the E-LTP, 
+LTP, while ensemble of somas implement replays,
+and system memory consolidation. 
 
 ### 3.1 Stage-by-stage feasibility table
 
