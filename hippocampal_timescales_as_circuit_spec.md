@@ -125,20 +125,20 @@ This volatile-versus-latched split, produced by changing only the axial ligand o
 
 **Replay as the handoff mechanism.** Each SWR event (§1: 100–300 ms, recurring over hours–days) replays a compressed version of a stored sequence, re-driving the same volatile organic tag sites that stored it originally. Repeated replay is the network-level equivalent of the PRP-threshold capture signal in §2: each pass is one more SET pulse toward a target inorganic memristor, and once enough passes have accumulated, that cortical-side device latches into its own non-volatile state — the same discrete regime change §1 assigns to transcription/late-LTP, relocated from a single synapse to a population of chip-scale devices. Before enough replay has occurred, the trace exists only in the fast organic tier and is lost if it decays uncaptured; after, it persists in the slow inorganic tier independent of the organic device's state, which is the hardware reading of hippocampal-to-cortical transfer, not just a shared vocabulary of "volatile" and "non-volatile."
 
-**Process-to-device mapping.** Laid against §1's eight consolidation stages, each process falls on one side of the handoff or on the boundary between them:
+**Process-to-device mapping.** The split follows the anatomy, not the process list: every stage that runs *at the hippocampal synapse* — from neurotransmission through late-LTP, including the full tag-decay/capture dynamic of Fig. 2 — stays on the quick, organic-volatile side. Only replay and systems consolidation cross to the slow, inorganic-non-volatile side, because that is the only stage that physically relocates the trace to a cortical synapse.
 
-| Process (§1) | Time constant | Quick tier — organic volatile memristor (Erokhin) | Slow tier — inorganic non-volatile memristor (Prodromakis) |
+| Process (§1) | Time constant | Hippocampal / quick tier — organic volatile memristor (Erokhin) | Cortical / slow tier — inorganic non-volatile memristor (Prodromakis) |
 |---|---|---|---|
 | Neurotransmission (AMPA/NMDA gating) | ~0.5–5 ms | Upstream of any memristive state — sets comparator bandwidth only | — |
-| Short-term plasticity | ~10 ms–1 s | Drives `V_seg`/dSpike dynamics (§4.2); faster than any memristor switching used here | — |
-| Ca²⁺/kinase cascades | ~1 s–5 min | Sets tag-induction amplitude (`tag_amplitude`, §4.2) — the SET pulse into the device | — |
-| AMPAR trafficking / early-LTP | ~1–30 min, decays 1–3 hr | The device's own relaxing low-resistance state (§2, §4.4.2 parent complex) | — |
-| Synaptic tagging & capture | tag set 1–2 min, decay τ≈1–4 hr | Same device; PRP-threshold crossing is the capture event | Capture can latch locally into the device's non-volatile derivative (§4.4.2 benzimidazole) — still per-synapse, not yet the cortical array |
-| Transcription / late-LTP | onset 30–60 min, stable 4–8 hr | — | Locally captured state is now stable — the first candidate SET pulse toward the inorganic array once replay begins |
-| Sharp-wave-ripple replay | 100–300 ms, recurs over hours–days | Re-drives the organic tag site on every pass | Receives one accumulating SET pulse per replay event — the fan-out source |
-| Systems consolidation | days–weeks (rodent) to months–years (human) | Organic device's role ends once captured and sufficiently replayed | Non-volatile inorganic crossbar — the permanent, distributed store (10⁶ devices/chip) |
+| Short-term plasticity | ~10 ms–1 s | Organic memristor's own fast conductance dynamics, alongside `V_seg`/dSpike (§4.2) | — |
+| Ca²⁺/kinase cascades | ~1 s–5 min | Sets tag-induction amplitude (`tag_amplitude`, §4.2) — the SET pulse into the organic device | — |
+| AMPAR trafficking / early-LTP | ~1–30 min, decays 1–3 hr | The organic device's own relaxing low-resistance state (§2, §4.4.2 parent complex) | — |
+| Synaptic tagging & capture | tag set 1–2 min, decay τ≈1–4 hr | Fig. 2's decay/capture dynamic, entirely within the organic device — PRP-threshold crossing is the capture event | — |
+| Transcription / late-LTP | onset 30–60 min, stable ~2 days | Captured, stabilized organic-device state, held locally at the hippocampal synapse | — |
+| Sharp-wave-ripple replay | 100–300 ms, recurs over hours–days | Re-drives the stabilized organic synapse on every pass | Each pass delivers one accumulating SET pulse toward the cortical device — the fan-out source |
+| Systems consolidation | days–weeks (rodent) to months–years (human) | Organic device's role ends once the trace has been sufficiently replayed | Non-volatile inorganic crossbar — the permanent, distributed cortical store (10⁶ devices/chip) |
 
-The quick tier covers everything up through capture at a single synapse; the slow tier only enters once replay starts driving a cortical-side device toward its own threshold — which is why systems consolidation (days to years) is orders of magnitude slower than tagging and capture (minutes to hours): it is rate-limited by how often replay revisits a given trace, not by any single device's intrinsic switching speed.
+Everything through late-LTP is a hippocampal-synapse-local, organic-volatile story — nothing inorganic is involved yet. Replay is the only process that touches both tiers at once: it reads the stabilized organic state and writes it, pulse by pulse, into the cortical inorganic array, which is why systems consolidation (days to years) is orders of magnitude slower than tagging and capture (minutes to hours) — it is rate-limited by how often replay revisits a given trace, not by either device's intrinsic switching speed.
 
 **Open risk.** This is an architectural hypothesis, not a demonstrated circuit: it requires a working interface between an organic volatile array and a much larger inorganic non-volatile array, with the replay-driven SET-accumulation rate on the inorganic side calibrated against the hours-to-days systems-consolidation timescale in §1's table — a two-technology integration problem on top of the single-device characterization risks already flagged in §4.2 and §4.4.2.
 
