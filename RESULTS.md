@@ -1032,6 +1032,85 @@ candidate, not bundled into this session's fix or the MN5 run below —
 changing DG and Schaffer in the same run would make it impossible to
 attribute any result to either one.
 
+## 18. The clustered fix at full scale (JOB H8, 12%): DG's population-level identity moves off zero for the first time
+
+JOB H8 (`run.sh`) ran §17's fix as a matched A/B pair at 12% scale (144,000
+granule cells, 12,005 EC LII cells, same seed 202, otherwise identical
+config) on MN5. Both arms finished cleanly, well inside the 20h QOS cap
+(control 37,758s ≈ 10.5h; clustered 38,410s ≈ 10.7h) — DG's own build step
+cost an extra ~209s for clustering (917s → 1,126s) at this scale, in line
+with §17's estimate and nowhere near the cohort-(-1) cache bug (§ JOB H7).
+Bulk network statistics (CA1/CA3/DG firing rates, active fractions) are
+essentially unchanged between arms — exactly what a targeted, single-
+variable intervention should look like.
+
+The pipeline's own population-level Jaccard-overlap `pattern_discrimination`
+table (not a reconstruction — printed by every run with `--n-patterns > 1`)
+gives the first real answer at this scale:
+
+| population | identity sep (control) | identity sep (clustered) | timing sep (control) | timing sep (clustered) |
+|---|---|---|---|---|
+| CA3 SUP | -0.000 | -0.000 | 0.001 | -0.001 |
+| **DG GC** | **0.000** | **+0.004** | -0.009 | +0.005 |
+| CA1 PYR | -0.003 | -0.000 | -0.003 | -0.001 |
+| EC LII | 0.146 | 0.186 | 0.281 | 0.321 |
+| EC LV | -0.011 | +0.011 | -0.005 | +0.021 |
+| mPFC | -0.016 | **+0.046** | -0.021 | -0.031 |
+
+**DG's population-level identity separation moves from exactly 0.000 to
++0.004** — the first time this metric has moved off zero for DG under any
+of the seven manipulations tried across §13–17 (neurogenesis, cohort
+Hebbian learning, the residual-rate fix, heterogeneity toggling, both
+SNR-tuning directions, and now clustering). Small, but the *direction*
+and rough scale match what §17's single-cell test predicted — this coarse
+Jaccard metric is far less sensitive than that test, so a small nonzero
+shift here is consistent with, not contradicted by, a real-but-weak
+effect.
+
+**A confound worth stating plainly, not glossing over:** mPFC's
+separation flips from -0.016 to +0.046, which reads as exciting — but
+EC LII's *own* separation also rose in the same run (0.146 → 0.186), and
+since EC LII's construction is identical between the two arms (clustering
+only touches the perforant path, downstream of EC LII), that rise is
+itself a consequence of the closed EC→DG→CA3→CA1→EC loop echoing whatever
+changed in DG back onto EC LII — not independent evidence that DG's fix
+specifically is what reached cortex. With one seed per arm, "DG's fix
+propagated forward" and "closed-loop amplification of any change,
+regardless of its source" cannot yet be told apart. Resolving this needs
+either a second seed at 12% (matching §16's seed-robustness method) or the
+single-cell reconstruction test directly at 12% scale (below).
+
+### The single-cell test could not be reconstructed locally — expected, not a bug
+
+§17's more sensitive test (each firing cell's ring-distance from the
+active pattern, at the single-cell level) needs the model's actual wired
+EC LII→GC connectivity, which `reconstruct_connectivity.py` extracts by
+building the network up to (not through) `nest.Simulate()`. Attempted
+locally at 12% scale: the process died silently after the NEST startup
+banner, no traceback, no output file — consistent with an OOM kill, not a
+code error. 12% scale needs ~226M total synapses (JOB H8's own build log)
+against this machine's 16GB RAM; this is the same class of problem that
+moved this whole investigation to MN5 in the first place (see the
+swap-thrashing note earlier this session). Not retried locally.
+
+**Follow-up prepared, not yet run:** `run_reconstruct.sh` (new, repo root)
+wraps `reconstruct_connectivity.py` in an MN5 sbatch job — same 12% config
+as JOB H8, one arm with `--dg-ec-cluster-sigma 0.05` and one without,
+`--out-hdf5` pointed at a throwaway path since the network never reaches
+`Simulate()`. Network build itself costs ~1,050s (52s CA3/CA1/Schaffer +
+~1,000s DG, per JOB H8's own timings), but the subsequent one-time
+`nest.GetConnections(target=GC)` call needed to extract the wiring is NOT
+well characterized at 144,000 targets — a local 1%-scale sanity check
+(12,000 targets) took 288.6s for that call alone, and §16/JOB H7 already
+found this exact call's cost scales with target population size in a way
+that is not simply linear. `--time` is set generously (4h) for this
+uncertainty; either way it is a fraction of JOB H8's ~10.5h full run,
+since it only needs the connectivity, not a simulation:
+```bash
+sbatch --export=ALL run_reconstruct.sh                       # control
+sbatch --export=ALL,CLUSTER_SIGMA=0.05 run_reconstruct.sh    # clustered
+```
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1052,19 +1131,26 @@ attribute any result to either one.
   rest→threshold gap or the loop saturates DG. Confirmed again in §14
   (`w_ec_dg=1.0` → 46 % active, detonation) — the ceiling is real at both
   scales tried.
-- **DG selectivity remains unsolved at the population level after six
-  independent attempts** (§13–14): age-indexed neurogenesis, cohort
-  Hebbian learning, the residual-rate fix, heterogeneity off, and both
-  SNR-tuning directions. *Population-level* identity separation has not
-  moved off ~0.000 under any of them. §15–17 refine this considerably: a
-  small, real single-cell identity signal exists (r=+0.009 to +0.017
-  depending on block health) and is explained by K=50-sample averaging
-  over uniform-random EC LII sources; §17's `--dg-ec-cluster-sigma`
-  (topographically clustered fan-in, same K=50) restores it substantially
-  at 1% scale (DG mean ring-distance from the active pattern 0.273 -> 0.236,
-  vs. EC LII's own ~0.22 and a chance null of 0.25) — not yet re-tested
-  against the *population-level* Jaccard metric, and not yet run at 12%
-  scale. That MN5 run is the natural next step (see Reproducing).
+- **DG selectivity at the population level has moved off zero for the
+  first time, but only barely, and the cortical read is confounded**
+  (§13–18): six earlier attempts (age-indexed neurogenesis, cohort Hebbian
+  learning, the residual-rate fix, heterogeneity off, both SNR-tuning
+  directions) never moved DG's population-level identity separation off
+  ~0.000. §17's clustered perforant-path fan-in does, at both scales
+  tested: +0.009 to +0.017 (single-cell, 1%, block-health-dependent) and
+  now **+0.004 at 12% scale** (population Jaccard, JOB H8) — small, but
+  real and in the predicted direction. What is NOT yet resolved: JOB H8's
+  downstream mPFC separation also improved (-0.016 -> +0.046), but EC
+  LII's own separation rose in the same run (0.146 -> 0.186) despite
+  identical construction in both arms, meaning the closed EC->DG->CA3->
+  CA1->EC loop could be amplifying ANY change, not specifically
+  propagating DG's fix forward. `run_reconstruct.sh` (JOB H9, prepared,
+  not yet run) would get the more sensitive single-cell metric at 12%
+  scale directly — local reconstruction hit an apparent OOM kill (12%
+  needs ~226M synapses against this machine's 16GB RAM), so this needs to
+  run on MN5, build-only (no full 10h+ run required, though the one-time
+  connectivity-extraction call's own cost at 144,000 targets is not yet
+  characterized — see `run_reconstruct.sh`'s 4h budget).
 - **Schaffer collaterals (CA3->CA1) are 100% dense — no sampling at all,
   the most severe version of the identity-washing problem in the whole
   network** (§17): every CA1 PYR cell receives from literally every CA3
