@@ -35,10 +35,16 @@ How it works
    forced to "__main__" in the namespace) inside a try/except for the abort
    exception. Every population up to the point you stopped at now exists in
    the live NEST kernel, exactly as it would in a real run with these flags.
-5. Reads off nest.GetConnections(target=<population>), post-filters by
-   source population in Python (never GetConnections(source=,target=) --
-   see build_homeostasis_hook's docstring in replay_scaled.py for why that
-   variant is catastrophically slow).
+5. Reads off nest.GetConnections() specifying whichever side of the
+   projection is SMALLER (its cost tracks that side's own connection count,
+   not the other side's or the kernel's total -- confirmed twice now: the
+   DG cohort-1 cache cost 14-16h scanning a 144,000-cell TARGET, and JOB
+   H9's first two 12%-scale attempts stalled past 2h the same way before
+   this was fixed to query by the ~50x-smaller SOURCE side instead), then
+   post-filters by the other side in Python. Never GetConnections(source=,
+   target=) with BOTH specified -- see build_homeostasis_hook's docstring
+   in replay_scaled.py for why that variant is catastrophically slow (it
+   walks the FULL connectome, not just one side's slots).
 
 Usage
 -----
@@ -137,19 +143,29 @@ def extract_ec_lii_gc(captured):
     print(f"EC LII population size: {len(ec_pop)}")
     print(f"DG GC population size: {len(gc_pop)}")
 
+    # Query by SOURCE (EC LII), not target (GC): GetConnections(target=X)'s
+    # cost tracks X's own INCOMING connection count (RESULTS.md SS16/JOB H7 --
+    # the same pattern that made the DG cohort-1 cache cost 14-16h at a
+    # 144,000-cell target). GC receives ~30M incoming synapses total across
+    # every DG projection (perforant path + basket/mossy-cell feedback);
+    # walking that to find the ~600K EC LII ones is what stalled JOB H9's
+    # first two 12%-scale attempts past a 2h wall. EC LII's OUTGOING slots
+    # are only the perforant path itself (600,000 at K=50) whenever --ec-lv
+    # is not also active (its only other possible target) -- querying by
+    # source instead walks a set ~50x smaller for the same information.
     t1 = time.perf_counter()
-    in_conns = nest.GetConnections(target=gc_pop)  # target-only -- see module docstring
-    src = np.array(nest.GetStatus(in_conns, "source"), dtype=np.int64)
-    tgt = np.array(nest.GetStatus(in_conns, "target"), dtype=np.int64)
-    print(f"GetConnections(target=GC): {len(in_conns):,} synapses in {time.perf_counter()-t1:.1f}s")
+    out_conns = nest.GetConnections(source=ec_pop)  # source-only, NOT target=GC
+    src = np.array(nest.GetStatus(out_conns, "source"), dtype=np.int64)
+    tgt = np.array(nest.GetStatus(out_conns, "target"), dtype=np.int64)
+    print(f"GetConnections(source=EC LII): {len(out_conns):,} synapses in {time.perf_counter()-t1:.1f}s")
 
-    ec_ids = set(ec_pop.tolist())
-    mask = np.array([s in ec_ids for s in src])
+    gc_id_set = set(gc_pop.tolist())
+    mask = np.array([t in gc_id_set for t in tgt])
     print(f"EC LII -> GC synapses: {mask.sum():,} (expect {len(gc_pop)*50:,} at K=50)")
 
     return dict(
         src=src[mask], tgt=tgt[mask],
-        ec_ids=np.array(sorted(ec_ids)), gc_ids=np.array(gc_pop.tolist()),
+        ec_ids=np.array(sorted(ec_pop.tolist())), gc_ids=np.array(gc_pop.tolist()),
     )
 
 
