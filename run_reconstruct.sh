@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=50
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --partition=gp_bsccs
 
 # JOB H9 -- lightweight 12% EC LII->GC connectivity reconstruction. Wraps
@@ -42,8 +42,12 @@
 # before it got to EC LV) PLUS one nest.GetConnections(target=GC) call whose
 # cost at 144,000 targets is still not characterized (288.6s at 12,000
 # targets / 1% scale locally; RESULTS.md SS16/JOB H7 found this call does
-# NOT scale simply with target size). --time kept at a generous 2h for that
-# uncertainty, well short of the useless 4h the first attempt burned.
+# NOT scale simply with target size. Fixed 2026-09-14 (reconstruct_connectivity.py):
+# query by source (EC LII, ~12,005 cells) instead of target (GC, ~30M
+# incoming synapses across every DG projection) -- dropped from 196-289s to
+# 6.5s at 1% scale in a local check. --time set to 4h regardless, as a
+# safety margin against this call's cost at 144,000-scale still not being
+# fully characterized end-to-end.
 #
 # Run BOTH arms (control + clustered), same seed, matching JOB H8 exactly
 # apart from --dg-ec-cluster-sigma (and now --ec-lv/--mpfc/--stc, dropped
