@@ -5,34 +5,49 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=50
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --partition=gp_bsccs
 
-# JOB H9 -- lightweight 12% EC LII->GC connectivity reconstruction, matched to
-# JOB H8's A/B pair (run.sh). Wraps reconstruct_connectivity.py, which drives
-# replay_scaled.py's own network-builder functions up to (not through) the
-# first nest.Simulate() call -- no full ~10.5h run needed, just the network
-# build (52s CA3/CA1/Schaffer + ~1,000s DG, per JOB H8's own timings) PLUS
-# one nest.GetConnections(target=GC) call to extract the wiring. That call's
-# own cost is NOT well characterized at 144,000 targets -- it took 288.6s at
-# 12,000 targets (1% scale) in a local sanity check, and RESULTS.md SS16/JOB H7
-# already found this exact call scales with target population size in a way
-# that is not simply linear (a 100x larger target cost only ~4x more once
-# before). --time is set generously (4h) for this uncertainty; if it finishes
-# in the first 20-30min, that is the expected case, not a sign of failure.
+# JOB H9 -- lightweight 12% EC LII->GC connectivity reconstruction. Wraps
+# reconstruct_connectivity.py, which drives replay_scaled.py's own network-
+# builder functions up to (not through) the first nest.Simulate() call -- no
+# full ~10.5h run needed.
 #
-# Motivation (RESULTS.md SS18): JOB H8's population-level Jaccard metric
-# showed DG's identity separation move off zero for the first time at 12%
-# scale (0.000 -> +0.004) under --dg-ec-cluster-sigma, but that metric is far
-# less sensitive than SS17's single-cell test (each firing cell's ring-distance
-# from the active pattern), which is what actually distinguished "clustering
-# restores identity" from "K=1 fan-in cut does not" at 1% scale. Reproducing
-# that single-cell test at 12% needs the model's real wired connectivity,
-# which could not be reconstructed locally (apparent OOM -- 12% scale needs
-# ~226M total synapses against a 16GB machine).
+# FIRST ATTEMPT (2026-09-13, job 45812883) hit its 4h wall without ever
+# reaching the EC LII->GC extraction step: --replay-args mirrored JOB H8
+# exactly (--ec-lv --mpfc --stc), which drove main() through the STC hook's
+# one-time CA1->EC synapse scan (3,179.6s) and EC LV's lesion cache
+# (1,907.3s) -- 85+ minutes on TWO builds this reconstruction does not need
+# at all. EC LII->GC's own wiring is already complete by the time
+# build_dg_module() returns, which happens BEFORE EC LV, mPFC, or the STC
+# hook are built (see main()'s Phase ordering) -- none of those three flags
+# can affect the connectivity this job extracts.
+#
+# FIX: --ec-lv/--mpfc/--stc dropped entirely below. This also means the
+# reconstructed connectivity is a DIFFERENT (not bit-identical) draw from
+# whatever JOB H8's real run used for the CONTROL arm specifically --
+# --stc changes n_epochs (14 -> 1), which changes how many scaffold/SWR
+# generators build_replay_network creates BEFORE build_dg_module runs,
+# which can shift NEST's shared kernel RNG's position by the time the
+# perforant path's fixed_indegree draw happens. That is fine for this
+# job's purpose: we need a STATISTICALLY representative K=50 uniform-random
+# sample under the same seed-derived EC LII place-field centers (which come
+# from an INDEPENDENT numpy RNG, seed+13, untouched by any of this) to run
+# SS17's distance-from-pattern-center test -- not JOB H8's literal specific
+# synapse list. The CLUSTERED arm is unaffected either way: its sampling
+# uses its own independent RNG (seed+97), never the shared kernel one.
+#
+# Expected cost now: ~17min through DG module build (50.5s CA3/CA1/Schaffer
+# + 5.2s EC LII + 932.8s DG, all confirmed from the first attempt's own log
+# before it got to EC LV) PLUS one nest.GetConnections(target=GC) call whose
+# cost at 144,000 targets is still not characterized (288.6s at 12,000
+# targets / 1% scale locally; RESULTS.md SS16/JOB H7 found this call does
+# NOT scale simply with target size). --time kept at a generous 2h for that
+# uncertainty, well short of the useless 4h the first attempt burned.
 #
 # Run BOTH arms (control + clustered), same seed, matching JOB H8 exactly
-# apart from --dg-ec-cluster-sigma:
+# apart from --dg-ec-cluster-sigma (and now --ec-lv/--mpfc/--stc, dropped
+# from both arms identically, so the A/B comparison stays apples-to-apples):
 #  sbatch --export=ALL run_reconstruct.sh                       # control
 #  sbatch --export=ALL,CLUSTER_SIGMA=0.05 run_reconstruct.sh    # clustered
 #
@@ -74,8 +89,8 @@ srun --cpu-bind=cores \
     --target ec_lii_gc \
     --out "$OUT" \
     --replay-args \
-      --scale 12 --dg --ec-lii --ec-lv --mpfc \
-      --n-patterns 3 --n-swr 14 --stc \
+      --scale 12 --dg --ec-lii \
+      --n-patterns 3 \
       --het 0.30 --het-wcomp 2.3 \
       --w-ec-dg 0.6 --pp-residual 0.9 --dg-delay-jitter 4.0 \
       --pattern-source ec-lii --place-field-sigma 0.15 \
