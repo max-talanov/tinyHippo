@@ -13,6 +13,14 @@ EC LII → DG → CA3 → CA1 → EC LII/LV → mPFC
 The model scales from a 1% test network (~8k neurons, runs on a laptop) to the
 full rat hippocampus (~780k neurons, MareNostrum 5), with the same code path.
 
+A companion document,
+[`hippocampal_timescales_as_circuit_spec.md`](hippocampal_timescales_as_circuit_spec.md),
+takes this model's validated timescales and mechanisms (synaptic tagging and
+capture, replay-driven consolidation) and specifies them as a memristor-based
+neuromorphic circuit — organic volatile devices for the hippocampal tag,
+inorganic non-volatile crossbars for the cortical store, with replay as the
+handoff between them.
+
 ## What the model does
 
 | Capability | Flag | Status |
@@ -24,6 +32,8 @@ full rat hippocampus (~780k neurons, MareNostrum 5), with the same code path.
 | **Synaptic tagging & capture** — early-LTP → tag → PRP → late-LTP on CA1→EC | `--stc` | implemented |
 | **Memory consolidation** — hippocampo-cortical loop (EC LII, EC LV, mPFC) | `--ec-lii --ec-lv --mpfc` | implemented |
 | **Synaptic homeostasis** — sleep downscaling, cortical L-LTP exempt | `--homeostasis` | implemented |
+| **Topographic DG wiring** — clustered EC LII→GC fan-in, restores pattern identity washed out by uniform random sampling | `--dg-ec-cluster-sigma` | validated at 1% and 12% (small, real effect) |
+| **Pattern discrimination probes** — per-population Jaccard identity/timing separation across interleaved patterns | `--n-patterns` | implemented |
 
 An interactive map of all capabilities, with the functions implementing each,
 is in [`capability_map.html`](capability_map.html) (open it in a browser).
@@ -74,7 +84,9 @@ Single-neuron f-I calibration has its own job:
 | [`nest_dg_ca3_fi_calibration.py`](nest_dg_ca3_fi_calibration.py) | DG/CA3 single-neuron f-I + DC-rheobase calibration |
 | [`run.sh`](run.sh) / [`run_calibrate.sh`](run_calibrate.sh) | SLURM launchers |
 | [`plot_pattern_completion.py`](plot_pattern_completion.py), [`replay_plot.py`](replay_plot.py), [`make_paper_figure.py`](make_paper_figure.py) | Offline plotting from HDF5 |
+| [`reconstruct_connectivity.py`](reconstruct_connectivity.py) / [`run_reconstruct.sh`](run_reconstruct.sh) | Extract a projection's actual wired connectivity without a full simulation |
 | [`capability_map.html`](capability_map.html) | Visual capability reference |
+| [`hippocampal_timescales_as_circuit_spec.md`](hippocampal_timescales_as_circuit_spec.md) | Companion hardware doc — memristive circuit spec derived from this model's timescales |
 
 ## Results
 
@@ -93,6 +105,20 @@ the work:
 
 ![pattern completion](/figures/pattern_completion.png)
 
+**Sparsifying the cortex makes consolidation selective — but not yet
+specific.** A cortical sparsity retune (§11 in [RESULTS.md](RESULTS.md)) turns
+saturated, all-cell L-LTP into a differentiated trace (7.2% of EC cells
+consolidate, weight CV 0.17). Scored against standard engram criteria
+(Josselyn & Tonegawa 2020), that trace is sparse and persistent but not yet
+**specific**: no cortical population discriminates pattern A from pattern B
+(§13), and hippocampal lesion does not impair cortical recall at the 12%
+scale tested (§12, Test 3 negative). Two convergent, non-topographic
+projections are implicated — DG's perforant path and, more severely, CA3→CA1
+Schaffer collaterals at 100% density — and a topographic fix
+(`--dg-ec-cluster-sigma`) moves DG's identity signal off zero for the first
+time, though the effect is still small (§17–18). Full scorecard and
+in-progress work: [RESULTS.md](RESULTS.md).
+
 ## Key references
 
 - Watson et al. (2025) *Cell Reports* 44:116080 — cell-specific CA3 wiring
@@ -101,3 +127,11 @@ the work:
 - Frey & Morris (1997) — synaptic tagging and capture
 - Kassab & Alexandre (2018) — DG mossy-cell threshold classes
 - Andersen et al. (2007) *The Hippocampus Book* — reference neuron counts
+- Josselyn & Tonegawa (2020) *Science* 367:eaaw4325 — engram criteria (sparse,
+  persistent, specific, sufficient, necessary)
+- Dolorfo & Amaral (1998) — entorhinal-dentate medial-lateral topography,
+  motivating the clustered perforant-path fan-in
+- Izhikevich (2006) — polychronization / delay-based temporal coding
+- Caus, Sławek, Mazur, Zawal, Baś, Szaciłowski, Talanov & Abdi (2026) — memristive
+  hippocampus hypothesis; candidate tag-element devices for
+  [`hippocampal_timescales_as_circuit_spec.md`](hippocampal_timescales_as_circuit_spec.md)

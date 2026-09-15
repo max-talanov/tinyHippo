@@ -15,6 +15,28 @@ Scales 1 % → 100 % of the rat hippocampus from one code path
 
 ![overview](figures/consolidation_overview.png)
 
+**Bottom line so far.** Replay, pattern separation (sparseness only), pattern
+completion, tagging-and-capture, and *selective* consolidation (§11) all work
+at 12 % scale. Pattern **specificity** does not yet survive to cortex — §13
+shows no population discriminates pattern A from pattern B, and §17–18 trace
+part of the cause to convergent, non-topographic wiring (DG's perforant path,
+and worse, CA3→CA1 Schaffer collaterals at 100 % density) that averages
+identity away by construction. A clustered, topographic fix moves DG's
+identity signal off zero for the first time (§17–18) but the effect is still
+small and the cortical read is confounded. Test 3 (hippocampal lesion →
+cortical recall) is negative at 12 % (§12): §13 says that is expected, since
+there is no pattern-specific trace yet to recall. See §13 for the full
+engram scorecard and §18/Open items for what is still running.
+
+The tag-decay/capture dynamic validated in §2, and the replay ⊥ consolidation
+dissociation in §3, are also the two findings the companion hardware document,
+[`hippocampal_timescales_as_circuit_spec.md`](hippocampal_timescales_as_circuit_spec.md),
+takes as its circuit specification: STC as a volatile-memristor tag element,
+and SWR replay as the volatile-organic → non-volatile-inorganic handoff that
+drives systems consolidation. That document also cites Caus, Sławek, Mazur,
+Zawal, Baś, Szaciłowski, Talanov & Abdi (2026) as a first fabricated-and-tested
+candidate device for the tag element described here.
+
 ---
 
 ## 1. Bidirectional replay
