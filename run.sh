@@ -270,6 +270,37 @@
 #PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,\
 #EC_PATTERN_WEIGHT=1.5,NOVEL_PATTERN_ONSET=8,DG_EC_CLUSTER_SIGMA=0.05,\
 #SEED=202 run.sh
+#
+# JOB H10 — Phase 12: clustered (by CA3 group) Schaffer collaterals, at 12%.
+#   RESULTS.md §20: a 1%-scale pilot of --schaffer-k 500 --schaffer-group-frac
+#   0.7 was INCONCLUSIVE, not a clean win like JOB H8's DG fix -- CA1 PYR's
+#   identity separation barely moved (-0.008 uniform -> -0.006 clustered,
+#   still flagged no-discrimination in both arms), and active fractions swung
+#   much more between arms than JOB H8 ever showed (DG GC 15.8%->24.1%, mPFC
+#   40.0%->32.9%). One confound specifically identified: at 1% scale (10
+#   groups, 264 CA3 SUP cells/group) the requested group_frac=0.7 (350 of 500
+#   sources) is UNSATISFIABLE -- a group only has 264 cells to give -- so the
+#   pilot only ever achieved 0.528 purity, confirmed via GetConnections on
+#   sample cells. At 12% scale (35 groups, 905 CA3 SUP cells/group) the same
+#   --schaffer-k 500 --schaffer-group-frac 0.7 IS satisfiable (350 < 905) --
+#   this reruns the EXACT same test unclamped, to see whether the 1% result
+#   was masked by that ceiling or is a real property of this approach.
+#
+#   Same base config as JOB H8's arms (DG wiring left at its DEFAULT, i.e.
+#   NOT combined with JOB H8's --dg-ec-cluster-sigma fix -- one variable at a
+#   time, same reasoning as JOB H8/H9's own isolation). Schaffer's own wiring
+#   cost is small regardless (7.2s at 1% scale/4,600 CA1 cells -> ~86s
+#   expected at 12%/55,195 cells, linear) -- the ~10-11h wall time is the
+#   same full-run cost as every other JOB H8-scale run, not new overhead.
+#  sbatch --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,HET_WCOMP=2.3,\
+#W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ec-lii,\
+#PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,\
+#EC_PATTERN_WEIGHT=1.5,NOVEL_PATTERN_ONSET=8,SCHAFFER_K=500,SEED=202 run.sh
+#  sbatch --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,HET_WCOMP=2.3,\
+#W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ec-lii,\
+#PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,\
+#EC_PATTERN_WEIGHT=1.5,NOVEL_PATTERN_ONSET=8,SCHAFFER_K=500,\
+#SCHAFFER_GROUP_FRAC=0.7,SEED=202 run.sh
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)
@@ -325,6 +356,9 @@ TRAIN_PATTERN=${TRAIN_PATTERN:-}   # replay ONLY this pattern index (A-only vs B
 NOVEL_PATTERN_ONSET=${NOVEL_PATTERN_ONSET:-}   # Phase 9 oddball: epoch index where a held-back pattern first appears
 SEED=${SEED:-}                     # sets BOTH the NEST kernel and numpy seeds
 SCHAFFER_K=${SCHAFFER_K:-}         # CA3->CA1 in-degree override (weights auto-scaled)
+SCHAFFER_GROUP_FRAC=${SCHAFFER_GROUP_FRAC:-}   # Phase 12: bias reduced Schaffer
+                                               # in-degree toward each CA1 cell's
+                                               # home CA3 group (requires SCHAFFER_K)
 SCHAFFER_STDP=${SCHAFFER_STDP:-0}  # 1 = delay-aware STDP on CA3->CA1
 DELAY_JITTER=${DELAY_JITTER:-0}    # per-synapse axonal delay jitter (ms)
 NO_MPFC_ASSOC=${NO_MPFC_ASSOC:-0}  # 1 = no cortical plasticity (Test-3 control)
@@ -355,6 +389,7 @@ echo "[Slurm] dg_neurogenesis=${DG_NEUROGENESIS}  neurogenesis_rate=${NEUROGENES
 echo "[Slurm] dg_perforant_stdp=${DG_PERFORANT_STDP}  dg_assoc_a=${DG_ASSOC_A:-<default>}  dg_assoc_a_hetero=${DG_ASSOC_A_HETERO:-<default>}  dg_assoc_w_max=${DG_ASSOC_W_MAX:-<default>}  dg_assoc_w_min=${DG_ASSOC_W_MIN:-<default>}"
 echo "[Slurm] novel_pattern_onset=${NOVEL_PATTERN_ONSET:-<none>}"
 echo "[Slurm] dg_ec_cluster_sigma=${DG_EC_CLUSTER_SIGMA:-<none, uniform random>}"
+echo "[Slurm] schaffer_k=${SCHAFFER_K:-<default, 100% dense>}  schaffer_group_frac=${SCHAFFER_GROUP_FRAC:-<none, uniform random>}"
 
 python3 - <<'PY'
 import nest
@@ -418,6 +453,8 @@ fi
 [ "$DG_PERFORANT_STDP" = "1" ]   && PHASE_TAG="${PHASE_TAG}_pstdp"
 [ -n "$NOVEL_PATTERN_ONSET" ]    && PHASE_TAG="${PHASE_TAG}_novel${NOVEL_PATTERN_ONSET}"
 [ -n "$DG_EC_CLUSTER_SIGMA" ]    && PHASE_TAG="${PHASE_TAG}_clu${DG_EC_CLUSTER_SIGMA}"
+[ -n "$SCHAFFER_K" ]             && PHASE_TAG="${PHASE_TAG}_schk${SCHAFFER_K}"
+[ -n "$SCHAFFER_GROUP_FRAC" ]    && PHASE_TAG="${PHASE_TAG}_schgrp${SCHAFFER_GROUP_FRAC}"
 [ -n "$SEED" ]               && PHASE_TAG="${PHASE_TAG}_s${SEED}"
 OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc${PHASE_TAG}.h5"
 echo "[Slurm] output → $OUTFILE"
@@ -433,6 +470,7 @@ OPTIONAL_FLAGS=""
 [ -n "$NOVEL_PATTERN_ONSET" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --novel-pattern-onset $NOVEL_PATTERN_ONSET"
 [ -n "$SEED" ]          && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --seed $SEED"
 [ -n "$SCHAFFER_K" ]    && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --schaffer-k $SCHAFFER_K"
+[ -n "$SCHAFFER_GROUP_FRAC" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --schaffer-group-frac $SCHAFFER_GROUP_FRAC"
 [ "$SCHAFFER_STDP" = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --schaffer-stdp"
 [ "$DELAY_JITTER" != "0" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --delay-jitter $DELAY_JITTER"
 [ "$NO_MPFC_ASSOC" = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --no-mpfc-assoc"
