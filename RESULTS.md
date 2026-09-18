@@ -1133,6 +1133,60 @@ sbatch --export=ALL run_reconstruct.sh                       # control
 sbatch --export=ALL,CLUSTER_SIGMA=0.05 run_reconstruct.sh    # clustered
 ```
 
+## 19. The single-cell test, replicated at full scale (JOB H9): clustering's effect holds, GID-mapping caveat included
+
+JOB H9 (`run_reconstruct.sh`) finally completed after two fixes — dropping
+`--ec-lv/--mpfc/--stc` (unneeded builds that stalled the first attempt for
+85+ minutes) and querying `nest.GetConnections(source=ec_pop)` instead of
+`target=gc_pop` (the second attempt's own stall: the same cost-tracks-
+target-size pattern as the DG cohort-(-1) bug, now fixed by querying the
+~12x-smaller EC LII side instead). Both arms finished in ~46 minutes each,
+comfortably inside the 4h budget: network build to `Simulate()` ~1,800s,
+then the source-query extraction ~950-970s (12,005 sources, 7,199,500
+synapses each) — slower than 1%'s 6.5s, as expected at 12x the source
+size, but nowhere near the multi-hour target-query cost it replaced.
+
+**A GID-mapping subtlety, caught before trusting the result.** Dropping
+`--stc` changes `n_epochs` (14→1), which changes how many place-field-
+drive Poisson generators `main()` creates in Phase 7 — *before* the DG
+module builds. That shifts every population's absolute NEST GID from
+that point on: JOB H9's reconstructed GC population sits at GIDs
+823385-967374, while JOB H8's real run has GC at 1135515-1279504 — a
+312,130-GID gap, exactly `(14-1) × 2 × 12,005` (13 extra epochs × two
+drive windows × EC LII's population size), confirming the mechanism.
+EC LII itself is unaffected (nothing before its own creation differs
+between the two configs), so its GIDs match exactly. Fix: join the
+reconstructed connectivity to the real run's spike data by **positional
+index within each population** (`gid - population's own minimum GID`),
+not by raw GID — verified safe because both configs create GC as one
+contiguous `nest.Create` block of identical size (143,990) immediately
+following whatever came before, so the *i*-th GC cell created is the same
+logical cell in both runs even though its absolute GID differs.
+
+With that mapping in place, the same distance-from-active-pattern-center
+test as §17 (all 14 blocks, SWR-forward window) gives:
+
+| | 1% scale (§17) | 12% scale (JOB H9) |
+|---|---|---|
+| control (uniform K=50) | 0.273 (worse than null) | **0.251** (≈ null) |
+| clustered (K=50, σ=0.05) | 0.236 (below null) | **0.226** (below null) |
+| EC LII (reference) | ~0.22 | 0.177 (control) / 0.185 (clustered) |
+| null | 0.250 | 0.250 |
+
+The effect **replicates at full scale, and the gap from null is if
+anything larger** (0.024 at 12% vs. 0.014 at 1%). It is also more
+internally consistent than at 1%: the 12% control condition lands almost
+exactly on the null (0.251) rather than measurably past it in the wrong
+direction (0.273 at 1%) — closer to what "no identity signal" should
+look like, with clustering then producing a clear, visible departure from
+it in `figures/dg_diagnostic/clustered_wiring_identity_test_12pct.png`
+(same layout as the 1%-scale figure: EC LII's own tuning curve is nearly
+identical between arms, as expected — clustering only touches DG's
+sampling — while DG's curve visibly rises near distance=0 only under
+clustering). This single-cell result and JOB H8's population-level
+Jaccard result (§18, 0.000 → +0.004) now agree in direction at the same
+scale, from two independently-computed metrics.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1153,26 +1207,24 @@ sbatch --export=ALL,CLUSTER_SIGMA=0.05 run_reconstruct.sh    # clustered
   rest→threshold gap or the loop saturates DG. Confirmed again in §14
   (`w_ec_dg=1.0` → 46 % active, detonation) — the ceiling is real at both
   scales tried.
-- **DG selectivity at the population level has moved off zero for the
-  first time, but only barely, and the cortical read is confounded**
-  (§13–18): six earlier attempts (age-indexed neurogenesis, cohort Hebbian
-  learning, the residual-rate fix, heterogeneity off, both SNR-tuning
-  directions) never moved DG's population-level identity separation off
-  ~0.000. §17's clustered perforant-path fan-in does, at both scales
-  tested: +0.009 to +0.017 (single-cell, 1%, block-health-dependent) and
-  now **+0.004 at 12% scale** (population Jaccard, JOB H8) — small, but
-  real and in the predicted direction. What is NOT yet resolved: JOB H8's
-  downstream mPFC separation also improved (-0.016 -> +0.046), but EC
-  LII's own separation rose in the same run (0.146 -> 0.186) despite
-  identical construction in both arms, meaning the closed EC->DG->CA3->
-  CA1->EC loop could be amplifying ANY change, not specifically
-  propagating DG's fix forward. `run_reconstruct.sh` (JOB H9, prepared,
-  not yet run) would get the more sensitive single-cell metric at 12%
-  scale directly — local reconstruction hit an apparent OOM kill (12%
-  needs ~226M synapses against this machine's 16GB RAM), so this needs to
-  run on MN5, build-only (no full 10h+ run required, though the one-time
-  connectivity-extraction call's own cost at 144,000 targets is not yet
-  characterized — see `run_reconstruct.sh`'s 4h budget).
+- **DG selectivity at the population level has moved off zero, and the
+  single-cell effect now replicates at full scale — but the cortical read
+  is still confounded** (§13–19): six earlier attempts (age-indexed
+  neurogenesis, cohort Hebbian learning, the residual-rate fix,
+  heterogeneity off, both SNR-tuning directions) never moved DG's
+  population-level identity separation off ~0.000. §17's clustered
+  perforant-path fan-in does, and §19 confirms it holds at 12% scale with
+  an *independently reconstructed* connectivity: DG's mean ring-distance
+  from the active pattern goes from 0.251 (control, ≈ null) to 0.226
+  (clustered) — the gap from null is if anything larger than at 1% scale
+  (0.273→0.236). Population Jaccard (JOB H8) agrees in direction at the
+  same scale: 0.000→+0.004. What is NOT yet resolved: JOB H8's downstream
+  mPFC separation also improved (-0.016 -> +0.046), but EC LII's own
+  separation rose in the same run (0.146 -> 0.186) despite identical
+  construction in both arms, meaning the closed EC->DG->CA3->CA1->EC loop
+  could be amplifying ANY change, not specifically propagating DG's fix
+  forward — resolving this still needs a second seed at 12% or a direct
+  cortical-layer version of §19's reconstruction test.
 - **Schaffer collaterals (CA3->CA1) are 100% dense — no sampling at all,
   the most severe version of the identity-washing problem in the whole
   network** (§17): every CA1 PYR cell receives from literally every CA3
