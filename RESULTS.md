@@ -1187,6 +1187,110 @@ clustering). This single-cell result and JOB H8's population-level
 Jaccard result (§18, 0.000 → +0.004) now agree in direction at the same
 scale, from two independently-computed metrics.
 
+## 20. Schaffer collaterals, clustered by CA3 group: a first pilot, no clean win yet
+
+§17's flagged next candidate — Schaffer collaterals (CA3→CA1), 100% dense,
+the most severe version of the identity-washing problem in the network —
+gets its first real test here. Landed as two new pieces of infrastructure
+(`grouped_fixed_connect`, `--schaffer-group-frac`), plus a genuinely
+different design choice than DG's fix, explained below, plus a 1%-scale
+pilot result that does **not** show a clean win the way §17/§19's DG fix
+did — reported honestly rather than reframed as a success.
+
+### Why this needed a different clustering axis than DG's fix
+
+`clustered_fixed_connect` (§17) biases sampling toward a *continuous ring
+position* — the right axis for EC LII, whose place fields genuinely sit on
+such a ring. CA3 has no equivalent continuous coordinate; its pattern
+identity lives in **sequence-group membership**, and those groups are
+*deliberately interleaved by neuron index* (`patterns = [list(range(i,
+n_seq_groups, n_patterns)) ...]`, chosen specifically so "a contiguous
+split would let downstream cells discriminate on gross topography rather
+than on assembly identity" — see `build_replay_network`'s own comment).
+Clustering Schaffer by neuron-index proximity, the way DG's fix works,
+would therefore cluster together cells from *different* patterns by
+construction — close to meaningless, and arguably a reintroduction of the
+exact shortcut the interleaving was designed to prevent.
+
+`grouped_fixed_connect` (`replay_scaled.py`, next to `clustered_fixed_connect`)
+clusters by **group identity** instead: each CA1 PYR cell is assigned a
+"home" CA3 sequence group (creation index modulo `n_seq_groups` — CA1 has
+no group of its own, so this is an arbitrary but well-defined and evenly-
+distributed stand-in), then draws an expected `--schaffer-group-frac`
+fraction of its (already-reduced via the existing `--schaffer-k`) in-degree
+from that group specifically, the rest uniformly from the other groups.
+Reuses `--schaffer-k`'s existing weight-compensation (fewer inputs,
+proportionally stronger, preserving mean CA1 drive) — `--schaffer-group-frac`
+is a pure sampling-bias layered on top, requires `--schaffer-k` to be set
+(meaningless at the default 100% density, where every source is included
+regardless of bias).
+
+### A clamping caveat, caught before trusting the pilot
+
+Verified against the real wired connectivity before running anything
+further: at 1% scale (`--schaffer-k 500`, 10 groups, 264 cells/group),
+requesting `--schaffer-group-frac 0.7` (350 of 500 sources from the home
+group) is **unsatisfiable** — a group only has 264 cells to give, full
+stop. The achieved purity was 264/500 = 0.528, confirmed via
+`nest.GetConnections(target=<one CA1 cell>)` on four sample cells (all
+exactly 264/500). Still a real, substantial bias — >5x the ~10% a
+uniform-random draw would give a group this size — but the requested 0.7
+would only be achievable at a larger scale (12%: 905 cells/group, comfortably
+above K=500) or a smaller K.
+
+### The pilot result: no clean population-level win, and larger swings than DG's fix ever showed
+
+Two full 1%-scale runs (seed 202, otherwise identical to every other run
+this session), `--schaffer-k 500` alone (uniform, reduced-but-unbiased)
+vs. `--schaffer-k 500 --schaffer-group-frac 0.7` (clustered, 0.528 achieved):
+
+| population | identity sep (uniform K=500) | identity sep (clustered, purity 0.528) | active % (uniform) | active % (clustered) |
+|---|---|---|---|---|
+| CA3 SUP | 0.000 | -0.000 | 99.9% | 99.9% |
+| **CA1 PYR** | **-0.008** | **-0.006** | 96.8% | 97.6% |
+| DG GC | -0.008 | -0.001 | 15.8% | 24.1% |
+| EC LII | 0.048 | 0.003 | 25.7% | 31.8% |
+| EC LV | 0.028 | 0.022 | 75.4% | 74.7% |
+| mPFC | 0.027 | -0.021 | 40.0% | 32.9% |
+
+CA1 PYR — the population this manipulation directly targets — moved
+from -0.008 to -0.006: negligible, and still solidly in "no discrimination"
+territory in both arms (both flagged `[FLAG] no population discriminates
+the patterns by either code`). Unlike §17/§19's DG result (a clean,
+reproducible move off exactly 0.000 at two independent scales), this does
+not read as a real effect yet. Two things stand out as worth resolving
+before drawing any conclusion, not glossed over:
+
+1. **Active fractions swung far more between arms than DG's fix ever
+   produced** — DG GC 15.8%→24.1%, EC LII 25.7%→31.8%, mPFC 40.0%→32.9%
+   (§17/19's DG pilot kept every population's rate within ~1% of the
+   control across both arms). Schaffer being CA1's dominant excitatory
+   drive means reducing its in-degree by >5x (2640→500), even with weight
+   compensation preserving the *mean*, plausibly changes higher-order
+   statistics (synchrony, burstiness) enough to shift the whole network's
+   operating point — a confound this pilot cannot separate from the
+   clustering bias itself.
+2. **EC LII's own identity separation dropped** (0.048→0.003) despite its
+   own construction being unaffected by Schaffer's wiring directly — the
+   same closed-loop-feedback signature already flagged as a confound in
+   §18 (CA1→EC feedback via the STC hook), now working in the *opposite*
+   direction from what would support a "Schaffer clustering helps"
+   narrative.
+
+**Not concluded either way.** This could mean the axis or parameters are
+wrong (K=500 too aggressive a cut this early, `group_frac` too high once
+clamping is accounted for, or CA1 needs its own within-group readout
+structure DG didn't need), or it could mean Schaffer's identity-washing
+problem needs a fundamentally different fix than "bias the sampling."
+Candidates for a next pass, not yet tried: a gentler `--schaffer-k`
+bracket (1000-1500 rather than 500) to isolate how much of the active-
+fraction swing comes from the indegree cut alone vs. the group bias;
+running the SAME uniform-vs-clustered comparison at 12% scale (where 0.7
+purity is actually achievable, unlike this clamped pilot); and checking
+whether the active-fraction swing itself is real signal or another
+instance of the block-to-block chaotic sensitivity documented in §16
+(a single whole-run average, exactly what §16 warned not to trust alone).
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1225,20 +1329,26 @@ scale, from two independently-computed metrics.
   could be amplifying ANY change, not specifically propagating DG's fix
   forward — resolving this still needs a second seed at 12% or a direct
   cortical-layer version of §19's reconstruction test.
-- **Schaffer collaterals (CA3->CA1) are 100% dense — no sampling at all,
-  the most severe version of the identity-washing problem in the whole
-  network** (§17): every CA1 PYR cell receives from literally every CA3
-  SUP and DEEP cell, so no downstream cell can be distinguished by *which*
-  CA3 cells it hears from. This is the leading candidate explanation for
-  why CA3's own real, measured spike-timing identity signal (separation
-  0.167 ± 0.022) collapses to ~0.00 by CA1 (§9, §13–14) — an all-to-all
-  projection can only preserve identity through timing/delay
-  heterogeneity, never through connectivity structure, which is exactly
-  the (partially effective, not sufficient alone) kind of fix §9 already
-  tried. Not fixed this session — turning it into a genuinely sparse,
-  topographic projection is a bigger, E/I-balance-affecting change than
-  DG's perforant path and needs its own isolated test, not bundled with
-  the DG fix above.
+- **Schaffer collaterals (CA3->CA1), clustered by CA3 group: first pilot
+  inconclusive, real confounds identified** (§20): a first attempt at
+  sparsifying + topographically biasing Schaffer (`--schaffer-k 500
+  --schaffer-group-frac 0.7`, clamped to an achieved 0.528 purity at 1%
+  scale) did not move CA1 PYR's population-level identity separation in
+  any convincing way (-0.008 uniform vs. -0.006 clustered, both still
+  flagged as no discrimination) — unlike DG's clean, reproducible result
+  (§17/19). Two real confounds, not yet disentangled: active fractions
+  swung far more between arms than DG's fix ever produced (DG GC
+  15.8%→24.1%, mPFC 40.0%→32.9%), suggesting the >5x in-degree cut alone
+  shifts the network's operating point; and EC LII's own identity
+  separation dropped (0.048→0.003) via the same closed-loop-feedback
+  mechanism already flagged in §18, working against a "clustering helps"
+  reading this time. Untried: a gentler `--schaffer-k` bracket to isolate
+  the indegree-cut confound from the clustering bias itself, the same
+  comparison at 12% scale where the requested purity is actually
+  achievable (unlike this clamped 1% pilot), and checking whether the
+  active-fraction swing is real signal or another instance of §16's
+  block-to-block chaotic sensitivity (this pilot only looked at a
+  whole-run average, exactly what §16 warned not to trust alone).
 - **DG's activity is unstable across time blocks — confirmed chaotic, not
   novel-pattern- or schedule-driven** (§15–16): 2–4 of 14 blocks run 4–9×
   hotter than the rest in any given run, with DG basket cells destabilized

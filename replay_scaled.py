@@ -647,6 +647,88 @@ def clustered_fixed_connect(pre, post, indegree, weight, delay, field_centers,
                      syn_spec={"weight": weight_param, "delay": delay})
 
 
+def grouped_fixed_connect(pre, post, indegree, weight, delay, n_groups, group_frac,
+                           w_cv=None, compensate=True, seed=42):
+    """Like fixed_connect, but each post neuron's `indegree` sources are drawn
+    with a bias toward ONE of `n_groups` contiguous blocks `pre` is
+    partitioned into, instead of uniformly across all of `pre`.
+
+    Built for Schaffer collaterals (CA3->CA1), where clustered_fixed_connect's
+    continuous-ring approach doesn't apply: CA3's sequence groups are
+    deliberately INTERLEAVED by neuron index (patterns = groups {p, p+P, ...}
+    for stride P, see build_replay_network's docstring on `patterns`) so that
+    nearby-index CA3 cells belong to DIFFERENT patterns by design -- clustering
+    by index the way clustered_fixed_connect does for EC LII->GC would be
+    close to meaningless here. Group membership (not index proximity) is
+    where identity actually lives in CA3, so that is the axis this clusters
+    on: `pre` group g = pre[g*len(pre)//n_groups : (g+1)*len(pre)//n_groups]
+    (matching build_replay_network's own `sup_nc`/`deep_nc` slicing), and each
+    post neuron is assigned a home group by creation index modulo n_groups
+    (post[i] -> group i % n_groups) -- post has no group of its own (e.g. CA1
+    PYR), so this just needs an arbitrary, well-defined, evenly-distributed
+    assignment.
+
+    `group_frac` in [0, 1]: expected fraction of a post neuron's `indegree`
+    drawn from its home group specifically; the rest is drawn uniformly from
+    the REST of `pre` (excluding the home group). 0 reproduces fixed_connect's
+    uniform behaviour exactly (up to RNG draw); only meaningful when
+    `indegree` is well under len(pre) -- at indegree==len(pre) (today's
+    default, 100% dense Schaffer) every pre cell is included regardless of
+    this bias, so group_frac has no effect (see --schaffer-k, which must be
+    set below len(pre) for this to do anything).
+
+    One nest.Connect call per post neuron (all_to_all), same cost profile as
+    clustered_fixed_connect. The per-group "rest of pre" index array is
+    precomputed ONCE per group (not per post neuron) to keep this
+    O(n_groups x len(pre) + n_post x indegree) rather than O(n_post x len(pre)),
+    which would be infeasible at CA1's population sizes (55,195 at 12% scale).
+    """
+    if w_cv is None:
+        w_cv = _HET["w_cv"]
+    if compensate and isinstance(weight, (int, float)) and weight > 0:
+        weight = wcomp_w(weight)
+    weight_param = (jittered_weight(weight, w_cv)
+                    if isinstance(weight, (int, float)) else weight)
+
+    pre_nc = _to_nc(pre)
+    post_nc = _to_nc(post)
+    pre_ids = np.array(pre_nc.tolist())
+    post_ids = np.array(post_nc.tolist())
+    n_pre, n_post = len(pre_ids), len(post_ids)
+    group_size = n_pre // n_groups
+    rng = np.random.default_rng(seed + 151)
+
+    # Precompute each group's own index range and its complement, once.
+    home_range = []
+    other_idx = []
+    all_idx = np.arange(n_pre)
+    for g in range(n_groups):
+        g0 = g * group_size
+        g1 = (g + 1) * group_size if g < n_groups - 1 else n_pre
+        home_range.append((g0, g1))
+        mask = np.ones(n_pre, dtype=bool)
+        mask[g0:g1] = False
+        other_idx.append(all_idx[mask])
+
+    post_home_group = np.arange(n_post) % n_groups
+    k_home_target = int(round(indegree * group_frac))
+
+    for i in range(n_post):
+        g0, g1 = home_range[post_home_group[i]]
+        home_idx = all_idx[g0:g1]
+        k_home = min(k_home_target, len(home_idx))
+        k_other = min(int(indegree) - k_home, len(other_idx[post_home_group[i]]))
+        chosen_home = (rng.choice(home_idx, size=k_home, replace=False)
+                       if k_home > 0 else np.empty(0, dtype=int))
+        chosen_other = (rng.choice(other_idx[post_home_group[i]], size=k_other, replace=False)
+                        if k_other > 0 else np.empty(0, dtype=int))
+        chosen = np.concatenate([chosen_home, chosen_other]).astype(int)
+        src_nc = nest.NodeCollection(sorted(pre_ids[chosen].tolist()))
+        tgt_nc = nest.NodeCollection([int(post_ids[i])])
+        nest.Connect(src_nc, tgt_nc, conn_spec="all_to_all",
+                     syn_spec={"weight": weight_param, "delay": delay})
+
+
 def bernoulli_connect(pre, post, prob, weight, delay):
     """
     NEST native pairwise_bernoulli — C++, fully MPI-parallel.
@@ -996,6 +1078,12 @@ def build_replay_network(
     # Using delay_jitter_wcomp for this would be wrong -- that also scales
     # CA1->EC and EC->mPFC, which STDP never touched.
     schaffer_w_scale=1.0,
+    # Phase 12: >0 biases each CA1 PYR cell's (reduced, via schaffer_k) K
+    # Schaffer sources toward ONE CA3 sequence group instead of sampling
+    # uniformly -- see grouped_fixed_connect's docstring for why group
+    # membership, not neuron index, is the right clustering axis here.
+    # Only meaningful together with schaffer_k < the population size.
+    schaffer_group_frac=0.0,
     # Phase 6.2: when a real DG circuit (--dg) drives CA3 via mossy fibres,
     # the Poisson DG proxy on CA3 SUP/DEEP is suppressed so drive is not
     # double-counted. The EC and background CA3 drives are kept -- they model
@@ -1298,10 +1386,20 @@ def build_replay_network(
     if schaffer_w_scale != 1.0:
         print(f"    Schaffer static weight scale x{schaffer_w_scale:.2f} "
               f"(STDP control)")
-    fixed_connect(CA3_SUP,  CA1_PYR, _K_sup,
-                  w_schaffer_sup_pyr*_wc*_sc_sup*schaffer_w_scale,   _d_sch)
-    fixed_connect(CA3_DEEP, CA1_PYR, _K_deep,
-                  w_schaffer_deep_pyr*_wc*_sc_deep*schaffer_w_scale, _d_sch)
+    if schaffer_group_frac > 0:
+        print(f"    Schaffer group clustering: group_frac={schaffer_group_frac} "
+              f"({n_seq_groups} groups, home group by CA1 PYR creation index)")
+        grouped_fixed_connect(CA3_SUP, CA1_PYR, _K_sup,
+                              w_schaffer_sup_pyr*_wc*_sc_sup*schaffer_w_scale, _d_sch,
+                              n_seq_groups, schaffer_group_frac, seed=seed_connect)
+        grouped_fixed_connect(CA3_DEEP, CA1_PYR, _K_deep,
+                              w_schaffer_deep_pyr*_wc*_sc_deep*schaffer_w_scale, _d_sch,
+                              n_seq_groups, schaffer_group_frac, seed=seed_connect)
+    else:
+        fixed_connect(CA3_SUP,  CA1_PYR, _K_sup,
+                      w_schaffer_sup_pyr*_wc*_sc_sup*schaffer_w_scale,   _d_sch)
+        fixed_connect(CA3_DEEP, CA1_PYR, _K_deep,
+                      w_schaffer_deep_pyr*_wc*_sc_deep*schaffer_w_scale, _d_sch)
     fixed_connect(CA3_SUP,  CA1_BASKET, K("schaffer_sup_basket",  N_ca3_sup),  w_schaffer_sup_basket, d_fast, compensate=False)
     fixed_connect(CA3_DEEP, CA1_BASKET, K("schaffer_deep_basket", N_ca3_deep), w_schaffer_deep_basket,d_fast, compensate=False)
     print(f"    done in {time.perf_counter()-t_sch:.1f}s")
@@ -4640,6 +4738,20 @@ Dentate gyrus (Phase 6.2):
              "CA1 cell sees all of CA3 -- and makes a plasticity hook on 12M "
              "synapses impractical.")
     parser.add_argument(
+        "--schaffer-group-frac", type=float, default=0.0, metavar="FRAC",
+        help="Phase 12 (RESULTS.md SS20+): bias each CA1 PYR cell's (reduced, "
+             "--schaffer-k) Schaffer sources toward ONE CA3 sequence group "
+             "instead of sampling uniformly across all groups. FRAC in [0,1] "
+             "is the expected fraction of a cell's in-degree drawn from its "
+             "assigned home group (creation index modulo n_seq_groups); the "
+             "rest is drawn uniformly from the other groups. Unlike EC LII->"
+             "GC's --dg-ec-cluster-sigma, this clusters by GROUP membership, "
+             "not neuron index -- CA3's groups are deliberately interleaved "
+             "by index (see build_replay_network's `patterns`), so index-"
+             "based clustering would not track pattern identity here. "
+             "Requires --schaffer-k (meaningless at the default 100%% dense "
+             "Schaffer, where every source is included regardless of bias).")
+    parser.add_argument(
         "--cortical-recall", action="store_true",
         help="Test 3: consolidate, then LESION the hippocampus (zero CA1->EC), "
              "cue part of the cortical assembly and measure how much of the rest "
@@ -5002,6 +5114,9 @@ Dentate gyrus (Phase 6.2):
         if args.pattern_source != "ec-lii":
             parser.error("--dg-ec-cluster-sigma requires --pattern-source "
                           "ec-lii (needs the real place-field centers)")
+    if args.schaffer_group_frac > 0 and args.schaffer_k is None:
+        parser.error("--schaffer-group-frac requires --schaffer-k (meaningless "
+                      "at the default 100% dense Schaffer projection)")
     if args.dg_neurogenesis and not args.dg:
         parser.error("--dg-neurogenesis requires --dg")
     if args.dg_neurogenesis and not args.ec_lii:
@@ -5143,6 +5258,7 @@ Dentate gyrus (Phase 6.2):
         delay_jitter_wcomp = args.delay_jitter_wcomp,
         schaffer_k     = args.schaffer_k,
         schaffer_w_scale = args.schaffer_w_scale,
+        schaffer_group_frac = args.schaffer_group_frac,
         **({} if args.seed is None else
            dict(master_seed=args.seed, seed_connect=args.seed)),
     )
