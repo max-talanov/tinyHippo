@@ -2779,7 +2779,7 @@ class STCHook:
     -------------------------------------------------------
     After each SWR epoch [t_swr_start, t_swr_end]:
 
-    1. GetConnections(target=EC_LII)  — only scans EC's ~600k incoming slots
+    1. CA1 PYR -> EC LII synapses fetched once, source-side (get_conns_between)
     2. Identify coincident CA1→EC pairs: CA1 pre fires before EC post within
        the STDP window → LTP tag;  post before pre → LTD tag.
     3. Tag strength decays exponentially with sim time (tau_tag).
@@ -2822,10 +2822,10 @@ class STCHook:
     # baseline weight, so the L-LTP ceiling can be expressed RELATIVE to it
     # (an absolute ceiling re-saturates the cortex whenever w_ca1_ec is rescaled)
     w_init        : float = 1.0
-    # GetConnections(target=EC_LII) also returns EC LII's stimulator inputs
-    # (1 background + 2*n_epochs place-field-drive generators per cell). They
-    # are not CA1->EC synapses and must be left out of w_init and the weight
-    # clip -- see build_stc_hook. True where the source is a CA1 PYR cell.
+    # True where the synapse is plastic (CA1 PYR -> EC LII). All True since
+    # build_stc_hook fetches source-side; before that, target=EC_LII also
+    # returned EC LII's stimulator inputs, which must stay out of w_init and
+    # the weight clip (RESULTS.md SS22).
     plastic       : np.ndarray = None  # [n_syn] bool
 
     def __post_init__(self):
@@ -2833,6 +2833,39 @@ class STCHook:
             self.history = []
         # struct arrays initialised lazily in build_stc_hook (need n_syn)
 
+
+
+def get_conns_between(pre, post):
+    """All synapses pre -> post, found by querying the SOURCE side only.
+
+    NEST 3.9's GetConnections cost here depends on which side is specified:
+    source= walks just those neurons' outgoing slots, while target= and
+    (source=, target=) both scaled with the whole kernel at 12% -- JOB H10
+    spent 1.0h in GetConnections(target=EC_LII) for 948k synapses and 3.7h in
+    GetConnections(source=EC_LV, target=mPFC) for 28,800. Querying by source
+    and filtering targets in numpy did the same jobs in seconds-to-minutes
+    (JOB H9: 7.2M outgoing EC LII synapses in ~960s incl. reading them back).
+
+    A SynapseCollection cannot be indexed by an array, but it is a list of
+    per-connection datums internally, so the matching entries are rebuilt into
+    a new SynapseCollection -- setting weights on it touches only pre -> post.
+    Also excludes stimulator inputs by construction (they are not in `pre`).
+
+    Returns (conns, src_gids, tgt_gids, weights) for the pre -> post subset.
+    """
+    import nest
+    out = nest.GetConnections(source=pre)
+    if len(out) == 0:
+        return out, np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0, np.float32)
+    tgt = np.asarray(out.get("target"), dtype=np.int64).reshape(-1)
+    idx = np.flatnonzero(np.isin(tgt, np.asarray(post.tolist(), dtype=np.int64)))
+    datums = out._datum
+    conns = nest.SynapseCollection([datums[i] for i in idx])
+    if len(conns) == 0:
+        return conns, np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0, np.float32)
+    src = np.asarray(conns.get("source"), dtype=np.int64).reshape(-1)
+    w   = np.asarray(conns.get("weight"), dtype=np.float32).reshape(-1)
+    return conns, src, tgt[idx], w
 
 
 def build_ec_lv(
@@ -2933,12 +2966,13 @@ def build_ec_lv(
     # Cache the incoming synapses now, for lesion_hippocampus() (see the
     # ECLVModule docstring: this scan gets dramatically more expensive once DG
     # and the Schaffer STDP set are in the kernel).
+    # Only the CA1 -> LV synapses are ever touched (lesion zeroes them), so
+    # fetch exactly those, source-side (see get_conns_between).
     t_c = _time.perf_counter()
-    in_conns = nest.GetConnections(target=EC_LV)
-    _src = np.asarray(in_conns.get("source"), dtype=np.int64)
-    ca1_mask = np.isin(_src, np.asarray(ca1_pyr.tolist(), dtype=np.int64))
-    print(f"  [ECLVModule] cached {len(_src):,} incoming for lesion "
-          f"({int(ca1_mask.sum()):,} from CA1) in {_time.perf_counter()-t_c:.2f}s")
+    in_conns, _src, _, _ = get_conns_between(ca1_pyr, EC_LV)
+    ca1_mask = np.ones(len(_src), dtype=bool)
+    print(f"  [ECLVModule] cached {len(_src):,} CA1->LV synapses for lesion "
+          f"in {_time.perf_counter()-t_c:.2f}s")
 
     print(f"  [ECLVModule] Total build: {_time.perf_counter()-t0:.1f}s")
 
@@ -3156,24 +3190,19 @@ def build_mpfc_assoc_hook(mpfc_module, eclv_module) -> MPFCAssocHook:
     # Hebbian rule touch those would clamp them to w_min on the depression
     # branch, flipping them positive and destroying the lateral inhibition that
     # makes the engram selective in the first place.
-    conns_all = nest.GetConnections(target=mpfc_module.population)
-    src_all   = np.array(nest.GetStatus(conns_all, "source"), dtype=np.int64)
-    lv_ids    = set(eclv_module.population.tolist())
-    keep      = np.array([g in lv_ids for g in src_all], dtype=bool)
-    n_drop    = int((~keep).sum())
-    conns = nest.GetConnections(source=eclv_module.population,
-                                target=mpfc_module.population)
+    # Source-side query (get_conns_between): the old
+    # GetConnections(source=EC_LV, target=mPFC) took 3.7h at 12% for 28,800
+    # synapses, plus a target=mPFC scan made only to count the exclusions.
+    conns, src, tgt, w = get_conns_between(eclv_module.population,
+                                           mpfc_module.population)
     n = len(conns)
-    w = np.array(nest.GetStatus(conns, "weight"), dtype=np.float32)
-    src = np.array(nest.GetStatus(conns, "source"), dtype=np.int64)
-    tgt = np.array(nest.GetStatus(conns, "target"), dtype=np.int64)
     lv_map  = {g: i for i, g in enumerate(eclv_module.population.tolist())}
     pfc_map = {g: i for i, g in enumerate(mpfc_module.population.tolist())}
     pre_idx  = np.array([lv_map.get(g, -1)  for g in src], dtype=np.int32)
     post_idx = np.array([pfc_map.get(g, -1) for g in tgt], dtype=np.int32)
     print(f"  [mPFCAssoc] {n:,} EC LV->mPFC synapses cached in "
-          f"{time.perf_counter()-t0:.2f}s (excluded {n_drop:,} non-EC-LV inputs, "
-          f"incl. lateral inhibition)")
+          f"{time.perf_counter()-t0:.2f}s (EC LV sources only: lateral "
+          f"inhibition excluded by construction)")
     return MPFCAssocHook(conns=conns, w=w, w_init=float(w[0]) if n else 1.0,
                          pre_idx=pre_idx, post_idx=post_idx, history=[])
 
@@ -3195,21 +3224,18 @@ def build_mpfc_recurrent_hook(mpfc_module) -> MPFCAssocHook:
     import nest
     t0 = time.perf_counter()
     print("\n  [mPFCRec] Fetching recurrent mPFC->mPFC synapses...", flush=True)
-    conns_all = nest.GetConnections(target=mpfc_module.population)
-    src_all = np.array(nest.GetStatus(conns_all, "source"), dtype=np.int64)
-    tgt_all = np.array(nest.GetStatus(conns_all, "target"), dtype=np.int64)
-    w_all   = np.array(nest.GetStatus(conns_all, "weight"), dtype=np.float32)
+    # mPFC -> mPFC only, source-side (get_conns_between): EC LV and the
+    # inhibitory INT inputs are excluded by construction, not by gating.
+    conns, src, tgt, w = get_conns_between(mpfc_module.population,
+                                           mpfc_module.population)
     pfc_ids = np.array(mpfc_module.population.tolist(), dtype=np.int64)
-    keep    = np.isin(src_all, pfc_ids)          # mPFC -> mPFC only
     pfc_map = {int(g): i for i, g in enumerate(pfc_ids)}
-    pre_idx  = np.array([pfc_map.get(int(g), -1) for g in src_all], dtype=np.int32)
-    post_idx = np.array([pfc_map.get(int(g), -1) for g in tgt_all], dtype=np.int32)
-    pre_idx[~keep] = -1                          # gate updates off non-recurrent
-    post_idx[~keep] = -1
-    print(f"  [mPFCRec] {int(keep.sum()):,} recurrent of {len(src_all):,} "
-          f"mPFC-incoming in {time.perf_counter()-t0:.1f}s", flush=True)
-    return MPFCAssocHook(conns=conns_all, w=w_all,
-                         w_init=float(w_all[keep].mean()) if keep.any() else 1.0,
+    pre_idx  = np.array([pfc_map.get(int(g), -1) for g in src], dtype=np.int32)
+    post_idx = np.array([pfc_map.get(int(g), -1) for g in tgt], dtype=np.int32)
+    print(f"  [mPFCRec] {len(conns):,} recurrent mPFC->mPFC synapses "
+          f"in {time.perf_counter()-t0:.1f}s", flush=True)
+    return MPFCAssocHook(conns=conns, w=w,
+                         w_init=float(w.mean()) if len(w) else 1.0,
                          pre_idx=pre_idx, post_idx=post_idx, history=[])
 
 
@@ -3633,8 +3659,10 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
     """
     Initialise the STC hook by fetching the CA1→EC SynapseCollection.
 
-    Uses GetConnections(target=EC_LII) which scans only EC's incoming slots
-    (~600k synapses, ~0.09s) rather than the full kernel (~2h).
+    Fetches exactly the CA1 PYR -> EC LII synapses, source-side
+    (get_conns_between). The old GetConnections(target=EC_LII) took 1.0h at
+    12% and also returned EC LII's stimulator inputs, which this hook then
+    clipped (RESULTS.md SS22) and lesion_hippocampus() zeroed along with CA1.
     Called once after build_ec_lii(), before the first nest.Simulate().
     """
     import nest
@@ -3643,30 +3671,16 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
     print("\n  [STCHook] Fetching CA1→EC synapse collection "
           "(one-time scan, reused every epoch)...")
 
-    conns = nest.GetConnections(target=ec_module.population)
+    conns, pre_ids_arr, post_ids_arr, w_arr = get_conns_between(
+        ec_module.pre_nc, ec_module.population)
     n_syn = len(conns)
-    print(f"  [STCHook] {n_syn:,} synapses found in {time.perf_counter()-t0:.2f}s")
+    print(f"  [STCHook] {n_syn:,} CA1->EC synapses found in {time.perf_counter()-t0:.2f}s")
 
-    w_arr = np.array(nest.GetStatus(conns, "weight"), dtype=np.float32)
-
-    # Cache source/target GIDs once — reused every epoch, no re-scan needed
-    print("  [STCHook] Caching source/target GIDs...")
-    t_cache      = time.perf_counter()
-    pre_ids_arr  = np.array(nest.GetStatus(conns, "source"), dtype=np.int64)
-    post_ids_arr = np.array(nest.GetStatus(conns, "target"), dtype=np.int64)
-    print(f"  [STCHook] GID cache done in {time.perf_counter()-t_cache:.2f}s")
-
-    # target=EC_LII also returns EC LII's stimulator inputs (background +
-    # place-field drive generators). Before this mask they were averaged into
-    # w_init and clipped every event: at 12% with --pattern-source ec-lii the
-    # first SWR cut every 1.5-weight place-field drive synapse to 1.11
-    # (1.5 x the 0.74 all-synapse mean) for the rest of the run. Only CA1 PYR
-    # sources are plastic; everything else keeps its NEST weight untouched.
-    plastic = np.isin(pre_ids_arr, np.array(ec_module.pre_nc.tolist(), dtype=np.int64))
-    print(f"  [STCHook] {int(plastic.sum()):,} CA1->EC (plastic), "
-          f"{int((~plastic).sum()):,} other inputs left fixed")
+    # Every entry is CA1 -> EC by construction now; the mask is kept so the
+    # clip/w_mean code stays explicit about what is plastic.
+    plastic = np.ones(n_syn, dtype=bool)
     if w_init_override is not None:
-        w_arr[plastic] = float(w_init_override)
+        w_arr[:] = float(w_init_override)
 
     # Map each synapse to its EC neuron index (0-based) for PRP accumulation
     ec_ids       = np.array(ec_module.population.tolist(), dtype=np.int64)

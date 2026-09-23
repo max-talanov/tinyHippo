@@ -1476,6 +1476,54 @@ since CA1 is 98.5% active. And the pattern source is the CA3 scaffold, not
 EC LII. JOB H11 (`run.sh`) is the 12% replication, where 0.7 purity is
 achievable.
 
+## 24. Half of every 12% run was connection lookups; now minutes (and the lesion no longer silences EC LII's drive)
+
+JOB H10 took 10.9h. Its simulation took 5.2h. Another 5.3h went on three
+one-time `GetConnections` calls made while setting up hooks:
+
+| lookup (12%, JOB H10) | synapses wanted | time |
+|---|---|---|
+| mPFC association hook: `GetConnections(source=EC_LV, target=mPFC)` | 28,800 | 13,168s (3.7h) |
+| STC hook: `GetConnections(target=EC_LII)` | 600,250 | 3,604s (1.0h) |
+| EC LV lesion cache: `GetConnections(target=EC_LV)` | 216,090 (CA1 part) | 2,173s (0.6h) |
+
+A new helper, `get_conns_between(pre, post)`, queries only the source
+side. It filters targets in numpy, then rebuilds a SynapseCollection from
+the matching entries. A SynapseCollection cannot be indexed by an array, but
+internally it is a list of connection handles, so a subset can be rebuilt
+from those. I checked in isolation that setting weights on the subset
+touches only those synapses. This is the same source-side fix as JOB H9's
+extraction (§19), and it is now used by the STC hook, the EC LV lesion
+cache, and both mPFC hooks. For time at 12%: JOB H9's source query read 7.2M
+synapses in about 960s, so these lookups (about 1.3M synapses in all)
+should take a few minutes rather than 5.3h.
+
+**Verified at 1%** (the full JOB H10 config plus `--cortical-recall`). Old
+and new code ran against the same live kernel, and each lookup returned an
+identical set of (source, target, weight) triples: STC 50,000, CA1→LV
+18,000, LV→mPFC 2,400, mPFC recurrent 2,400. Hook weights, indices and
+`w_init` also match. The 1% times dropped from 18.4/10.9/10.4/2.9s to
+1.0/0.96/0.1/0.0s. A 3-block end-to-end run completed: after it, NEST's
+weights equal the hooks' weight arrays, and 18,500 CA1→EC plus 1,540
+LV→mPFC synapses have moved.
+
+**A second consequence of §22's bug, fixed by the same change.**
+`lesion_hippocampus()` zeroes all of `stc.conns`, and those used to include
+EC LII's stimulator inputs. Every systems-consolidation lesion (Test 3, JOB
+D/E) therefore also switched off EC LII's background and place-field drive.
+That contradicts the lesion's documented intent ("cortex intact"). With the
+source-side lookup, the lesion zeroes exactly the CA1→EC LII and CA1→EC LV
+synapses (68,000 at 1%) and leaves all 29,000 EC LII generator inputs
+unchanged. Test 3's cortical-recall numbers were measured after a lesion
+that also cut this cortical input, and should be re-checked.
+
+**Runtime.** `run.sh` now requests `cpus-per-task=112`, a full MN5 GPP node,
+instead of 50. NEST's thread count follows `$SLURM_CPUS_PER_TASK`.
+JOB H11's commands pass `--time=06:00:00`. The header default stays at 20h
+for the documented long jobs. Expected JOB H11 time: about 5.5h at 50
+threads with the lookup fix alone, and less at 112 threads. How much less
+is not yet measured, so the 6h limit is a margin rather than a prediction.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
