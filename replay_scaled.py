@@ -2822,6 +2822,11 @@ class STCHook:
     # baseline weight, so the L-LTP ceiling can be expressed RELATIVE to it
     # (an absolute ceiling re-saturates the cortex whenever w_ca1_ec is rescaled)
     w_init        : float = 1.0
+    # GetConnections(target=EC_LII) also returns EC LII's stimulator inputs
+    # (1 background + 2*n_epochs place-field-drive generators per cell). They
+    # are not CA1->EC synapses and must be left out of w_init and the weight
+    # clip -- see build_stc_hook. True where the source is a CA1 PYR cell.
+    plastic       : np.ndarray = None  # [n_syn] bool
 
     def __post_init__(self):
         if self.history is None:
@@ -3643,8 +3648,6 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
     print(f"  [STCHook] {n_syn:,} synapses found in {time.perf_counter()-t0:.2f}s")
 
     w_arr = np.array(nest.GetStatus(conns, "weight"), dtype=np.float32)
-    if w_init_override is not None:
-        w_arr[:] = float(w_init_override)
 
     # Cache source/target GIDs once — reused every epoch, no re-scan needed
     print("  [STCHook] Caching source/target GIDs...")
@@ -3652,6 +3655,18 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
     pre_ids_arr  = np.array(nest.GetStatus(conns, "source"), dtype=np.int64)
     post_ids_arr = np.array(nest.GetStatus(conns, "target"), dtype=np.int64)
     print(f"  [STCHook] GID cache done in {time.perf_counter()-t_cache:.2f}s")
+
+    # target=EC_LII also returns EC LII's stimulator inputs (background +
+    # place-field drive generators). Before this mask they were averaged into
+    # w_init and clipped every event: at 12% with --pattern-source ec-lii the
+    # first SWR cut every 1.5-weight place-field drive synapse to 1.11
+    # (1.5 x the 0.74 all-synapse mean) for the rest of the run. Only CA1 PYR
+    # sources are plastic; everything else keeps its NEST weight untouched.
+    plastic = np.isin(pre_ids_arr, np.array(ec_module.pre_nc.tolist(), dtype=np.int64))
+    print(f"  [STCHook] {int(plastic.sum()):,} CA1->EC (plastic), "
+          f"{int((~plastic).sum()):,} other inputs left fixed")
+    if w_init_override is not None:
+        w_arr[plastic] = float(w_init_override)
 
     # Map each synapse to its EC neuron index (0-based) for PRP accumulation
     ec_ids       = np.array(ec_module.population.tolist(), dtype=np.int64)
@@ -3661,7 +3676,8 @@ def build_stc_hook(ec_module, w_init_override=None) -> STCHook:
     return STCHook(
         conns        = conns,
         w            = w_arr,
-        w_init       = float(w_arr.mean()) if len(w_arr) else 1.0,
+        w_init       = float(w_arr[plastic].mean()) if plastic.any() else 1.0,
+        plastic      = plastic,
         tag          = np.zeros(n_syn, dtype=np.float32),
         tag_time_ms  = np.full(n_syn, -1e9, dtype=np.float32),
         prp_pool     = np.zeros(ec_module.N, dtype=np.float32),
@@ -3819,7 +3835,9 @@ def run_stc_hook(
     # E-LTP: apply Δw immediately (reversible, will decay without L-LTP)
     _wmax = w_max_rel * stc.w_init
     _wmin = w_min_rel * stc.w_init
-    stc.w = np.clip(stc.w + delta_w, _wmin, _wmax)
+    # Clip CA1->EC synapses only; stimulator inputs to EC LII (see
+    # build_stc_hook) keep their own weight, never tagged or bounded here.
+    stc.w = np.where(stc.plastic, np.clip(stc.w + delta_w, _wmin, _wmax), stc.w)
 
     # L-LTP: capture if PRP sufficient AND tag alive AND not already captured
     tag_alive   = stc.tag > 1e-4
@@ -3852,7 +3870,7 @@ def run_stc_hook(
     n_tagged_syn = int((stc.tag > 1e-4).sum())
     n_ltp_new    = int(new_capture.sum())
     n_ltp_total  = int(stc.ltp_done.sum())
-    w_mean       = float(stc.w.mean())
+    w_mean       = float(stc.w[stc.plastic].mean())
     w_ltp_mean   = float(stc.w[stc.ltp_done].mean()) if n_ltp_total > 0 else float('nan')
     prp_mean     = float(stc.prp_pool.mean())
     prp_max      = float(stc.prp_pool.max())
@@ -5672,7 +5690,7 @@ Dentate gyrus (Phase 6.2):
             print(f"  [homeo] alpha={alpha_val:.2f}:  "
                   f"rho_fwd={stats['rho_fwd_post_homeo']:+.3f}  "
                   f"rho_rev={stats['rho_rev_post_homeo']:+.3f}  "
-                  f"EC L-LTP w_mean={float(stc_hook.w.mean()):.4f}")
+                  f"EC L-LTP w_mean={float(stc_hook.w[stc_hook.plastic].mean()):.4f}")
 
             homeo_results[alpha_val] = stats
             total_sim_ms += SIM_MS

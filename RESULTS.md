@@ -1356,6 +1356,76 @@ reports CA3 timing identity of 0.167 ± 0.022. It could also be tested with
 EC LII as the source, but only if identity survives DG and the mossy fibers
 land on CA3 in a group-aligned way, which neither currently does.
 
+## 22. Architecture census, and an STC-hook bug that has cut EC LII's pattern drive since the ec-lii experiments began
+
+### The current architecture, counted from the kernel
+
+![Network architecture](figures/architecture/network_architecture_12pct.png)
+
+`figures/architecture/network_architecture_12pct.png` (from
+`plot_architecture.py`) shows all 38 neuronal projections of the current
+production config (JOB H10 grouped arm, 12% scale), about 80.2M synapses in
+total. The counts come from that run's own build log: K × N_post for every
+`fixed_indegree` call, and the expected value for the three
+`pairwise_bernoulli` CA3 recurrent projections. I checked the projection
+list against a full NEST-kernel census of the same config at 1% scale
+(`GetConnections(source=<each population>)`, tallied by target population).
+The kernel contains no projection that is missing from the figure, and every
+`fixed_indegree` count equals K × N_post exactly. Three projections carry
+70% of all synapses: Schaffer SUP→CA1 PYR (34%), DG basket→GC (25%), and
+Schaffer DEEP→CA1 PYR (12%).
+
+The census also found two structural facts not documented elsewhere:
+
+- **CA1 OLM has no neuronal input.** Its only input is a theta sinusoidal
+  generator, so it is an open-loop theta pacemaker onto CA1 PYR (1.1M
+  synapses). There is no CA1 PYR→OLM feedback.
+- **MC_HIGH→GC is wired but dead.** About 576k synapses at 12% come from a
+  population that never fires (0 spikes in every run to date).
+
+### The STC hook was clipping EC LII's place-field drive
+
+`build_stc_hook` fetches its plastic set with
+`GetConnections(target=EC_LII)`. That call returns every synapse onto EC
+LII, not only CA1→EC. At 12% that is 948,395 synapses: the 600,250 CA1→EC
+synapses plus 348,145 stimulator synapses. The stimulators are 29 per cell:
+1 background generator and 28 place-field drive generators (14 blocks ×
+forward/reverse). The census confirms this at 1% (29,000 stimulator inputs
+to 1,000 cells). Two consequences:
+
+1. **`w_init` was the mean over everything.** That mean was 0.7405, not
+   CA1→EC's 0.30, so the relative bounds became [0.074, 1.11] instead of
+   the intended [0.03, 0.45]. CA1→EC could therefore potentiate 3.7× rather
+   than 1.5×.
+2. **The clip applied to every synapse in the set.** The first STC call
+   clipped all 1.5-weight place-field drive synapses to 1.11, a 26% cut in
+   EC LII's pattern drive that lasted for the rest of every run.
+
+The arithmetic matches the logged value exactly: (600,250 × 0.30 +
+348,145 × 1.11) / 948,395 = 0.5977, and JOB H10's event-1 `w_mean` is
+**0.5978**. The generator synapses were never tagged, since tagging needs a
+CA1 pre-spike, so L-LTP and structural plasticity did not touch them. Only
+the clip and `w_init` were affected.
+
+**Scope.** Every `--stc --pattern-source ec-lii` run (§13–21, JOB H5–H10)
+ran with full drive in block 0 (t=0–999 ms) and 74% drive from block 1
+onward, with loosened CA1→EC bounds throughout. Because A/B arms shared the
+bug, within-pair comparisons stay internally consistent, but absolute EC
+LII drive levels were lower than the configured values. One hypothesis,
+untested: block 0 is the only block with full drive, and it is repeatedly
+the anomalous one (DG at 15.4% active, and CA3's 239 Hz spike in §15). Under
+`--pattern-source ca3` the only extra synapse per cell is a silent
+background generator (rate 0), so the effect is small: the CA1→EC ceiling
+was 0.485 instead of 0.45.
+
+**Fix.** The hook now marks only CA1 PYR-sourced synapses as plastic
+(`STCHook.plastic`). `w_init`, the clip, and the reported `w_mean` use only
+those synapses, and every other input keeps its NEST weight. Verified with a
+2-block 1% run: after 4 STC events, all 5,000 stimulator synapses are still
+exactly 1.5 in the kernel, `w_init` = 0.300, and the CA1→EC maximum is 0.425,
+within the 0.45 ceiling. Runs after this commit are **not** directly
+comparable to JOB H5–H10 on absolute EC LII drive.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1394,6 +1464,11 @@ land on CA3 in a group-aligned way, which neither currently does.
   could be amplifying ANY change, not specifically propagating DG's fix
   forward — resolving this still needs a second seed at 12% or a direct
   cortical-layer version of §19's reconstruction test.
+- **Re-baseline after the STC-hook fix** (§22): every ec-lii-source result
+  from §13–21 ran with EC LII's place-field drive clipped to 74% from block 1
+  onward. The EC-drive-sensitive conclusions most worth re-checking with the
+  fix are: DG clustering at 12% (JOB H8), and whether block 0's recurring
+  hot DG activity was an artifact of it being the only full-drive block.
 - **Schaffer clustering by CA3 group has not been validly tested yet**
   (§20–21): both the 1% pilot and the 12% JOB H10 retest came back null,
   with CA1 PYR identity separation at −0.008 vs. +0.004 at 12%. Both results
