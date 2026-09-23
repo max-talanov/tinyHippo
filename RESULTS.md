@@ -1291,6 +1291,71 @@ whether the active-fraction swing itself is real signal or another
 instance of the block-to-block chaotic sensitivity documented in §16
 (a single whole-run average, exactly what §16 warned not to trust alone).
 
+## 21. The Schaffer retest at 12% (JOB H10): null again, and the reason is upstream: CA3 groups carry no pattern under `--pattern-source ec-lii`
+
+JOB H10 reran §20's comparison at 12% scale (MN5 jobs 46173176 / 46173192,
+seed 202, both completed, ~11h each), where `--schaffer-group-frac 0.7` is
+achievable without clamping (35 groups × 905 CA3 SUP cells, K=500 → 350
+home-group sources).
+
+| population | identity sep (uniform K=500) | identity sep (grouped 0.7) | timing sep (uniform) | timing sep (grouped) | active % (uniform / grouped) |
+|---|---|---|---|---|---|
+| CA3 SUP | -0.000 | -0.000 | 0.000 | -0.000 | 99.8% / 99.8% |
+| **CA1 PYR** | **-0.008** | **+0.004** | -0.009 | +0.001 | 91.2% / 93.4% |
+| DG GC | 0.001 | -0.001 | -0.014 | +0.022 | 3.5% / 3.6% |
+| EC LII | 0.132 | 0.150 | 0.298 | 0.277 | 12.1% / 13.1% |
+| EC LV | -0.005 | -0.002 | -0.012 | +0.027 | 63.0% / 62.4% |
+| mPFC | -0.034 | -0.002 | 0.007 | -0.045 | 16.5% / 16.8% |
+
+Both runs report only EC LII as discriminating. CA1 PYR moves by +0.012,
+which is noise-sized. At 91–93% active, the Jaccard identity metric is
+saturated for CA1, and it is saturated for CA3 at 99.8%. One of §20's
+confounds does **not** replicate: at 12%, active fractions stay within about
+1 point between arms. (At 1%, DG GC went 15.8→24.1% and mPFC 40.0→32.9%.) So
+that swing was a small-scale effect, not a result of cutting Schaffer
+in-degree.
+
+### A rate-based check shows why the test could not succeed
+
+Because Jaccard is saturated, I read spike counts in the SWR windows
+(300–420 and 600–720 ms of each block) directly from the h5 files:
+
+- **Do CA3 SUP's pattern groups fire more when their pattern is active?**
+  Each block's 35 group-mean counts were z-scored, then averaged over the
+  groups belonging to that block's pattern. The mean over the 14 blocks is
+  **+0.002 (uniform)** and **+0.03 (grouped)**. Per-block values scatter
+  within ±0.3 with no sign bias. CA3's sequence groups carry **no pattern
+  identity** in these runs.
+- **Does CA1 inherit group identity through its home group?** The same
+  z-score over CA1 PYR home groups gives +0.08 (uniform, where home group
+  means nothing) and +0.01 (grouped). Both are null.
+- **Whole-population rate-vector correlation, within vs. between pattern:**
+  CA3 SUP −0.001 / −0.001, CA1 PYR −0.022 / −0.021 (uniform / grouped). The
+  two arms are identical. The small negative CA1 value appears in both arms
+  and probably reflects slow drift across blocks rather than pattern coding.
+
+The cause is in the build code, not in the Schaffer wiring. With
+`--pattern-source ec-lii`, `build_replay_network` sends **no
+pattern-specific drive to CA3 at all**. The trigger and staggered scaffold
+are only wired when `pattern_source == "ca3"`. The only pattern pathway into
+CA3 is EC LII → DG → mossy fibers, and the mossy fibers are uniform
+`fixed_connect` (K=15/8), which knows nothing about CA3 groups. In these
+runs DG itself carries no identity (uniform perforant path, no
+`--dg-ec-cluster-sigma`). CA3 group membership is therefore unrelated to the
+pattern. A Schaffer projection clustered by CA3 group has nothing to
+transmit, so a null result is guaranteed. **This applies to §20's 1% pilot
+too:** its "inconclusive" result is null by construction under the same
+flags, not evidence about Schaffer clustering itself. I should have caught
+this design flaw before either run.
+
+**What remains valid:** the `grouped_fixed_connect` mechanism and the
+wiring checks from §20. The hypothesis is still untested. A valid test
+needs CA3 groups that actually carry the pattern, which today means
+`--pattern-source ca3`. That is the regime where the first open item below
+reports CA3 timing identity of 0.167 ± 0.022. It could also be tested with
+EC LII as the source, but only if identity survives DG and the mossy fibers
+land on CA3 in a group-aligned way, which neither currently does.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1329,26 +1394,19 @@ instance of the block-to-block chaotic sensitivity documented in §16
   could be amplifying ANY change, not specifically propagating DG's fix
   forward — resolving this still needs a second seed at 12% or a direct
   cortical-layer version of §19's reconstruction test.
-- **Schaffer collaterals (CA3->CA1), clustered by CA3 group: first pilot
-  inconclusive, real confounds identified** (§20): a first attempt at
-  sparsifying + topographically biasing Schaffer (`--schaffer-k 500
-  --schaffer-group-frac 0.7`, clamped to an achieved 0.528 purity at 1%
-  scale) did not move CA1 PYR's population-level identity separation in
-  any convincing way (-0.008 uniform vs. -0.006 clustered, both still
-  flagged as no discrimination) — unlike DG's clean, reproducible result
-  (§17/19). Two real confounds, not yet disentangled: active fractions
-  swung far more between arms than DG's fix ever produced (DG GC
-  15.8%→24.1%, mPFC 40.0%→32.9%), suggesting the >5x in-degree cut alone
-  shifts the network's operating point; and EC LII's own identity
-  separation dropped (0.048→0.003) via the same closed-loop-feedback
-  mechanism already flagged in §18, working against a "clustering helps"
-  reading this time. Untried: a gentler `--schaffer-k` bracket to isolate
-  the indegree-cut confound from the clustering bias itself, the same
-  comparison at 12% scale where the requested purity is actually
-  achievable (unlike this clamped 1% pilot), and checking whether the
-  active-fraction swing is real signal or another instance of §16's
-  block-to-block chaotic sensitivity (this pilot only looked at a
-  whole-run average, exactly what §16 warned not to trust alone).
+- **Schaffer clustering by CA3 group has not been validly tested yet**
+  (§20–21): both the 1% pilot and the 12% JOB H10 retest came back null,
+  with CA1 PYR identity separation at −0.008 vs. +0.004 at 12%. Both results
+  are null by construction. Under `--pattern-source ec-lii`, CA3's sequence
+  groups carry no pattern identity: the rate z-score is ≈0 in both arms,
+  because CA3 gets no group-specific drive and the mossy fibers are uniform.
+  §20's active-fraction swing did not replicate at 12%. Next valid test: the
+  same uniform-vs-grouped pair under `--pattern-source ca3`, where the
+  groups are the pattern. Alternatively, make identity reach CA3 groups from
+  EC LII, using DG clustering plus mossy fibers that are group-aligned.
+  Separately, CA3 SUP at 99.8% and CA1 PYR at 91–93% active saturate the
+  Jaccard identity metric. Future CA1 comparisons should use a rate-based
+  readout.
 - **DG's activity is unstable across time blocks — confirmed chaotic, not
   novel-pattern- or schedule-driven** (§15–16): 2–4 of 14 blocks run 4–9×
   hotter than the rest in any given run, with DG basket cells destabilized
