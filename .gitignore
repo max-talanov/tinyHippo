@@ -208,3 +208,6 @@ __marimo__/
 
 # tinyHippo simulation outputs (written by run_calibrate.sh / replay_scaled.py on MN5)
 calibration_output/
+
+# macOS Finder metadata
+.DS_Store
