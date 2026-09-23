@@ -1426,6 +1426,56 @@ exactly 1.5 in the kernel, `w_init` = 0.300, and the CA1→EC maximum is 0.425,
 within the 0.45 ceiling. Runs after this commit are **not** directly
 comparable to JOB H5–H10 on absolute EC LII drive.
 
+## 23. Schaffer group clustering, tested validly: pattern identity reaches CA1 for the first time (1%, one seed)
+
+This is the test §21 called for: the same uniform-vs-grouped pair
+(`--schaffer-k 500`, with or without `--schaffer-group-frac 0.7`) under the
+default `--pattern-source ca3`. In that mode the replay trigger and
+staggered scaffold drive the active pattern's CA3 groups, so group
+membership **is** the pattern. The config is otherwise the §20 pilot's
+(`--dg --ec-lii --ec-lv --mpfc --stc`, seed 202, 14 blocks), minus the
+ec-lii-only flags. The schedule is patterns 0, 1, 2 cycling. Both runs
+started before the §22 STC fix; under the `ca3` source the bug only moves
+the CA1→EC ceiling from 0.45 to 0.485, the same in both arms. Outputs are
+`replay_output_1pct/ca3src_schafferk500[_grp0.7].h5`. The same §21 rate
+analysis (SWR-window spike counts per block, z-scored across groups) was
+applied to both:
+
+| measure | uniform K=500 | grouped 0.7 (purity 0.528) |
+|---|---|---|
+| CA3 SUP: z of active-pattern groups | **+0.950** (14/14 blocks >0, perm p=0.0002) | **+0.996** (14/14, p=0.0002) |
+| CA1 PYR: z of home groups of the active pattern | +0.056 (7/14, perm p=0.41) | **+0.648** (13/14, t-test p=0.0003, perm p=0.0002) |
+| CA1 PYR: rate-vector corr sep (within − between) | −0.022 | **+0.051** |
+| CA1 PYR: Jaccard timing sep | −0.009 | **+0.049** |
+| CA1 PYR: Jaccard identity sep (98–99% active, saturated) | −0.001 | −0.001 |
+
+The permutation test shuffles which pattern each block had (5,000
+shuffles). p=0.0002 is the floor for that many shuffles.
+
+- **The precondition now holds.** CA3's pattern groups fire more in their
+  own blocks, in every block of both arms (z ≈ +1). Under `ec-lii` this was
+  ≈0 (§21).
+- **Uniform Schaffer wiring does not pass it on.** The uniform arm's home
+  groups are the structural null, since home group means nothing without
+  clustering, and they sit at +0.056. A K=500 uniform draw from 2,640 CA3
+  cells averages the pattern away, the same convergent-sampling mechanism as
+  EC LII→DG (§17).
+- **Grouped wiring passes it on.** With 53% of each CA1 cell's Schaffer
+  inputs from one CA3 group, CA1 home groups follow their CA3 group's
+  pattern in 13 of 14 blocks. The population readout agrees: CA1 rate-vector
+  separation changes sign, and CA1 timing separation (+0.049) now exceeds
+  CA3 SUP's own (+0.026).
+- **Cortex does not inherit it yet.** EC LII, EC LV and mPFC show no
+  improvement. mPFC timing separation actually drops, from 0.101 to −0.032.
+  CA1→EC LII is the next uniform random convergent hop (K=50 from 4,600
+  cells), so it is the obvious next candidate for the same treatment.
+
+**Caveats.** This is one seed at 1% scale, with purity clamped to 0.528.
+The code is identity carried by rate modulation, not by which cells fire,
+since CA1 is 98.5% active. And the pattern source is the CA3 scaffold, not
+EC LII. JOB H11 (`run.sh`) is the 12% replication, where 0.7 purity is
+achievable.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1469,8 +1519,13 @@ comparable to JOB H5–H10 on absolute EC LII drive.
   onward. The EC-drive-sensitive conclusions most worth re-checking with the
   fix are: DG clustering at 12% (JOB H8), and whether block 0's recurring
   hot DG activity was an artifact of it being the only full-drive block.
-- **Schaffer clustering by CA3 group has not been validly tested yet**
-  (§20–21): both the 1% pilot and the 12% JOB H10 retest came back null,
+- **Schaffer clustering transmits CA3 group identity to CA1 at 1%** (§23):
+  home-group z is +0.648 vs +0.056 uniform, under `--pattern-source ca3`.
+  Still to do: replicate at 12% (JOB H11) and over seeds, cluster the next
+  hop (CA1→EC LII) so cortex can read it, and make EC-LII-sourced patterns
+  reach CA3 groups.
+- **Why the ec-lii Schaffer tests were null** (§20–21): both the 1% pilot
+  and the 12% JOB H10 retest came back null,
   with CA1 PYR identity separation at −0.008 vs. +0.004 at 12%. Both results
   are null by construction. Under `--pattern-source ec-lii`, CA3's sequence
   groups carry no pattern identity: the rate z-score is ≈0 in both arms,

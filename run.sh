@@ -301,6 +301,24 @@
 #PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,\
 #EC_PATTERN_WEIGHT=1.5,NOVEL_PATTERN_ONSET=8,SCHAFFER_K=500,\
 #SCHAFFER_GROUP_FRAC=0.7,SEED=202 run.sh
+#
+# JOB H11 — Schaffer group clustering with CA3 groups that carry the pattern.
+#   RESULTS.md §21: JOB H10 was null BY CONSTRUCTION -- under
+#   PATTERN_SOURCE=ec-lii CA3 gets no group-specific drive, so its groups
+#   carry no pattern (group z ~0). §23: the same pair at 1% with the default
+#   PATTERN_SOURCE=ca3 (scaffold drives the pattern's CA3 groups, z ~ +1.0)
+#   gives the first pattern identity in CA1: home-group z +0.648 grouped vs
+#   +0.056 uniform (13/14 blocks, perm p=0.0002), rate-vector sep -0.022 ->
+#   +0.051. But purity was clamped to 0.528 at 1%, 1 seed only. This is the
+#   12% replication, unclamped (0.7 of K=500 from a 905-cell group). Needs
+#   the STC-hook fix (commit 6c8a503) -- scp replay_scaled.py too.
+#   PATTERN_SOURCE left unset (= ca3): the EC-LII place-field flags and
+#   NOVEL_PATTERN_ONSET are ec-lii-only and dropped.
+#  sbatch --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,HET_WCOMP=2.3,\
+#W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,SCHAFFER_K=500,SEED=202 run.sh
+#  sbatch --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,HET_WCOMP=2.3,\
+#W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,SCHAFFER_K=500,\
+#SCHAFFER_GROUP_FRAC=0.7,SEED=202 run.sh
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)
