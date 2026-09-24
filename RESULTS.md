@@ -1523,6 +1523,65 @@ available". Expected JOB H11 time is about 5.5h (5.2h simulation plus the
 DG build). Its commands pass `--time=08:00:00` for margin, and the header
 default stays at 20h for the documented long jobs.
 
+## 25. CA1→EC LII group clustering (1% pilot): the wiring is right, but EC LII does not follow CA1's group signal
+
+`--ca1-ec-group-frac` (commit 4486967) clusters the next hop the same way
+§23 clustered Schaffer. CA1 PYR cell i's group is its Schaffer home group
+(i mod n_seq_groups). Each EC LII cell draws FRAC of its K=50 CA1 inputs from
+one such group, and the rest uniformly from the others. To support this,
+`grouped_fixed_connect` gained a `pre_group_of` argument. Checks at 1%:
+
+- every EC LII cell has exactly 50 CA1 inputs;
+- the home-group fraction is 0.700, against 0.102 for uniform wiring;
+- every weight is 0.30 and the delays are unchanged;
+- the Schaffer SUP→PYR synapse set hashes identically to the previous
+  commit, so existing configs are untouched.
+
+**Pilot.** 1% scale, `--pattern-source ca3`, grouped Schaffer (K=500, 0.7)
+in both arms, seed 202, with or without `--ca1-ec-group-frac 0.7`. This is
+the first run pair with the §22/§24 fixes, and each run took 26.5 min, down
+from 116 min for the §23 runs. Same group-rate analysis as §23:
+
+| | Schaffer grouped only | + CA1→EC grouped 0.7 |
+|---|---|---|
+| CA3 SUP group z | +0.990 (14/14, p=0.0002) | +0.991 (14/14, p=0.0002) |
+| CA1 PYR home-group z | +0.654 (14/14, p=0.0002) | +0.547 (13/14, p=0.0002) |
+| **EC LII home-group z** | +0.080 (8/14, p=0.17; home group meaningless here) | **+0.001** (7/14, p=0.52) |
+| EC LII rate-vector sep | +0.020 | −0.114 |
+| mPFC rate-vector sep | −0.143 | −0.048 |
+
+The CA1 result from §23 replicates on the fixed code. But **EC LII does not
+pick up the group signal, even though its inputs are grouped.** Two
+measurements from the grouped arm explain why:
+
+- **CA1's group code is a small rate modulation.** Home groups of the active
+  pattern fire only +10.8% more than the others (2.17 vs 1.98 SWR-window
+  spikes per cell per block). The z ≈ +0.55 is significant because it is
+  consistent across blocks, not because it is large. With 70% of inputs
+  from one group, an EC LII cell's input differs by only about 7% between
+  patterns.
+- **EC LII's output is set by a fixed core of cells.** Only 277 of 1,000
+  cells ever fire in the SWR windows. 92 cells fire in ≥12 of 14 blocks and
+  produce 50% of the SWR spikes. Which cells cross threshold follows per-cell
+  excitability and STC-potentiated weights, not a ~7% input difference. EC
+  LII's measured output modulation is +1.6%. There is no early-block signal
+  either (block 0: z = −0.03).
+
+**Reading.** Clustering the wiring is necessary but no longer sufficient
+at this hop. The limit is upstream: CA1 at 97% active can only carry pattern
+identity as a ~10% rate modulation, and a thresholded, heterogeneous EC LII
+population filters that out. Options, none tested yet:
+
+1. A larger CA1 modulation: Schaffer `group_frac` → 1.0, or less CA1
+   saturation (stronger feedforward inhibition, so fewer CA1 cells fire per
+   SWR).
+2. A less deterministic EC LII core, from less intrinsic heterogeneity or
+   less-saturated STC capture.
+3. CA1→EC `group_frac` → 1.0. This can only raise EC input modulation from
+   about 7% to at most CA1's 10.8%, so it is unlikely to be enough alone.
+
+Single seed, 1% only, so this is a pilot.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1568,9 +1627,13 @@ default stays at 20h for the documented long jobs.
   hot DG activity was an artifact of it being the only full-drive block.
 - **Schaffer clustering transmits CA3 group identity to CA1 at 1%** (§23):
   home-group z is +0.648 vs +0.056 uniform, under `--pattern-source ca3`.
-  Still to do: replicate at 12% (JOB H11) and over seeds, cluster the next
-  hop (CA1→EC LII) so cortex can read it, and make EC-LII-sourced patterns
-  reach CA3 groups.
+  Still to do: replicate at 12% (JOB H11) and over seeds, and make
+  EC-LII-sourced patterns reach CA3 groups.
+- **CA1→EC LII clustering alone does not carry identity into EC LII**
+  (§25): EC LII home-group z is +0.001 with 70% grouped CA1 inputs. CA1's
+  group code is only a +10.8% rate modulation, and EC LII's output is set
+  by a fixed core of excitable cells. Next: a larger CA1 modulation (Schaffer
+  `group_frac` 1.0, or less CA1 saturation) before touching this hop again.
 - **Why the ec-lii Schaffer tests were null** (§20–21): both the 1% pilot
   and the 12% JOB H10 retest came back null,
   with CA1 PYR identity separation at −0.008 vs. +0.004 at 12%. Both results
