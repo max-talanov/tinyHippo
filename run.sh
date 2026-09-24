@@ -4,7 +4,7 @@
 #SBATCH --error=Nest_replay_%A_%a.slurmerr
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=112
+#SBATCH --cpus-per-task=50
 #SBATCH --time=20:00:00
 #SBATCH --partition=gp_bsccs
 
@@ -316,12 +316,14 @@
 #   place-field flags and NOVEL_PATTERN_ONSET are ec-lii-only and dropped.
 #   Wall time: JOB H10 took 10.9h, of which 5.3h was one-time connection
 #   lookups (mPFC assoc 3.7h, STC 1.0h, EC LV lesion cache 0.6h). Those now
-#   query source-side (get_conns_between, minutes) and cpus-per-task went
-#   50 -> 112, so --time=06:00:00 here (overrides the 20h header default).
-#  sbatch --time=06:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
+#   query source-side (get_conns_between, minutes). Expected ~5.5h at 50
+#   threads (5.2h simulation + DG build); --time=08:00:00 for margin
+#   (overrides the 20h header default). cpus-per-task=112 was tried and
+#   rejected by gp_bsccs ("Requested node configuration is not available").
+#  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SEED=202 run.sh
-#  sbatch --time=06:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
+#  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,SEED=202 run.sh
 

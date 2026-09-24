@@ -1517,12 +1517,11 @@ synapses (68,000 at 1%) and leaves all 29,000 EC LII generator inputs
 unchanged. Test 3's cortical-recall numbers were measured after a lesion
 that also cut this cortical input, and should be re-checked.
 
-**Runtime.** `run.sh` now requests `cpus-per-task=112`, a full MN5 GPP node,
-instead of 50. NEST's thread count follows `$SLURM_CPUS_PER_TASK`.
-JOB H11's commands pass `--time=06:00:00`. The header default stays at 20h
-for the documented long jobs. Expected JOB H11 time: about 5.5h at 50
-threads with the lookup fix alone, and less at 112 threads. How much less
-is not yet measured, so the 6h limit is a margin rather than a prediction.
+**Runtime.** `run.sh` stays at `cpus-per-task=50`. I tried 112, a full
+node, but `gp_bsccs` rejected it with "Requested node configuration is not
+available". Expected JOB H11 time is about 5.5h (5.2h simulation plus the
+DG build). Its commands pass `--time=08:00:00` for margin, and the header
+default stays at 20h for the documented long jobs.
 
 ## Open items
 
