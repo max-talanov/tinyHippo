@@ -326,6 +326,27 @@
 #  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,SEED=202 run.sh
+#
+# JOB H12 — CA1->EC LII group clustering at 12%.
+#   RESULTS.md SS26: JOB H11 replicated SS23 at 12% -- CA1 home-group z
+#   +0.788 (14/14 blocks, p=0.0002) vs +0.089 uniform, and the group rate
+#   modulation doubled vs 1% (+21.0% vs +10.8%). SS25's 1% pilot of
+#   --ca1-ec-group-frac failed because CA1's modulation was only +10.8%; at
+#   12% it is twice that, so the next hop gets its real test here. Control =
+#   JOB H11's grouped arm (same seed, same build except CA1->EC wiring).
+#   Output now records each population's gid_first, needed to assign EC LII
+#   home groups when not every EC LII cell spikes.
+#  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=202 run.sh
+#
+# JOB H13 — JOB H11 on a second seed (CLAUDE.md: single-seed = pilot).
+#  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SEED=303 run.sh
+#  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,SEED=303 run.sh
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)

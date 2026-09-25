@@ -1582,6 +1582,62 @@ population filters that out. Options, none tested yet:
 
 Single seed, 1% only, so this is a pilot.
 
+## 26. JOB H11 at 12%: Schaffer group clustering replicates and strengthens; the lookup fix halves run time
+
+JOB H11 (MN5 jobs 46467726 / 46467757, seed 202, `--pattern-source ca3`,
+`--schaffer-k 500`, with or without `--schaffer-group-frac 0.7`) repeats
+§23 at 12%. At this scale, 0.7 purity is achievable (35 groups × 905 CA3
+SUP cells).
+
+**Run time.** Both jobs took 5.4h, against 10.9h for JOB H10. The three
+setup lookups from §24 dropped from 13,168s to 11s (mPFC association),
+3,604s to 86–90s (STC) and 2,173s to 80–83s (EC LV lesion cache). The
+simulation itself took 17,550–17,770s. So the §24 fix holds at scale.
+
+**The result replicates, with a larger effect.** Same SWR-window group-rate
+analysis as §23, with a permutation test that shuffles which pattern each
+block had (5,000 shuffles, p floor 0.0002):
+
+| | uniform K=500 | grouped 0.7 |
+|---|---|---|
+| CA3 SUP group z | +1.073 (14/14, p=0.0002), modulation +4.1% | +1.062 (14/14, p=0.0002), +4.2% |
+| **CA1 PYR home-group z** | +0.089 (10/14, p=0.075), modulation +0.1% | **+0.788 (14/14, p=0.0002), modulation +21.0%** |
+| CA1 PYR Jaccard timing sep | +0.003 | **+0.107** (pipeline flags "discriminates by timing: CA1 PYR") |
+
+- The grouped arm's CA1 home-group z lies between 0.58 and 0.91 in **every**
+  block. At 1% it was +0.648, and 13 of 14 blocks were positive.
+- **CA1 amplifies the group signal.** CA3's pattern groups fire only +4.2%
+  more than other groups during their own blocks, yet the matching CA1 home
+  groups fire +21.0% more. At 1% the CA1 figure was +10.8%.
+- Replay quality is unaffected. In the grouped arm, ρ is +0.691 forward
+  and −0.367 reverse; uniform gives +0.564 and −0.401.
+
+**Cortex: suggestive, not established.** With CA1→EC still uniform, I
+measured cortical identity with whole-population rate-vector separation,
+under the same block-label permutation test:
+
+| rate-vector sep (perm p) | uniform | grouped |
+|---|---|---|
+| CA1 PYR | +0.110 (0.030) | +0.075 (0.024) |
+| EC LII | +0.107 (0.121) | +0.034 (0.264) |
+| EC LV | +0.068 (0.114) | +0.083 (0.026) |
+| mPFC | +0.102 (0.171) | +0.156 (0.032) |
+
+With only 14 blocks this measure is weak. The small p values sit around
+0.02–0.03, which is not convincing across 8 tests. Jaccard identity
+separation rises modestly in the grouped arm (EC LII +0.008 → +0.035, mPFC
++0.040 → +0.075), but that is also single-seed. What does hold: the
+cell-level CA1 separation is present in *both* arms, so uniform K=500 wiring
+already gives individual CA1 cells some random pattern preference. Only
+grouping produces the strong, consistent group-level code.
+
+**Next.** §25's 1% CA1→EC pilot failed because CA1's modulation was only
++10.8%. At 12% it is +21.0%, so that hop gets its real test in **JOB H12**
+(`--ca1-ec-group-frac 0.7` at 12%, with JOB H11's grouped arm as control).
+**JOB H13** repeats JOB H11 on seed 303. The HDF5 export now records each
+population's `gid_first`. EC LII home groups need it, because at 6–7%
+active the lowest spiking GID is not reliably the first cell.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1625,10 +1681,11 @@ Single seed, 1% only, so this is a pilot.
   onward. The EC-drive-sensitive conclusions most worth re-checking with the
   fix are: DG clustering at 12% (JOB H8), and whether block 0's recurring
   hot DG activity was an artifact of it being the only full-drive block.
-- **Schaffer clustering transmits CA3 group identity to CA1 at 1%** (§23):
-  home-group z is +0.648 vs +0.056 uniform, under `--pattern-source ca3`.
-  Still to do: replicate at 12% (JOB H11) and over seeds, and make
-  EC-LII-sourced patterns reach CA3 groups.
+- **Schaffer clustering transmits CA3 group identity to CA1, replicated at
+  12%** (§23, §26): home-group z is +0.788 at 12% (+21% rate modulation,
+  14/14 blocks) vs +0.089 uniform, under `--pattern-source ca3`. Still to do:
+  a second seed (JOB H13), CA1→EC at 12% (JOB H12), and getting
+  EC-LII-sourced patterns into CA3 groups.
 - **CA1→EC LII clustering alone does not carry identity into EC LII**
   (§25): EC LII home-group z is +0.001 with 70% grouped CA1 inputs. CA1's
   group code is only a +10.8% rate modulation, and EC LII's output is set

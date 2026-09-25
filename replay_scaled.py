@@ -4427,6 +4427,7 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
 
             g = h5.create_group(h5_key)
             g.attrs["n_cells"] = n_cells
+            g.attrs["gid_first"] = int(net[pop_key].tolist()[0])  # cell i = gid_first + i
             g.create_dataset("spk_times",   data=t_spk.astype(np.float32), **compress)
             g.create_dataset("spk_senders", data=s_spk.astype(np.int32),   **compress)
 
@@ -4439,6 +4440,7 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             t_spk, s_spk = spk_cache["ec_lii"]
             g_ec = h5.create_group("ec_lii")
             g_ec.attrs["n_cells"]   = ec_module.N
+            g_ec.attrs["gid_first"] = int(ec_module.population.tolist()[0])
             g_ec.attrs["K_ca1_ec"]  = ec_module.K_ca1_ec
             g_ec.attrs["w_init"]    = ec_module.w_init
             g_ec.create_dataset("spk_times",   data=t_spk.astype(np.float32), **compress)
@@ -4454,6 +4456,7 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             if _mpi_rank() == 0:
                 g_lv = h5.create_group("ec_lv")
                 g_lv.attrs["n_cells"]    = eclv_module.N
+                g_lv.attrs["gid_first"]  = int(eclv_module.population.tolist()[0])
                 g_lv.attrs["K_ca1_lv"]   = eclv_module.K_ca1_lv
                 g_lv.attrs["K_eclii_lv"] = eclv_module.K_eclii_lv
                 g_lv.attrs["w_init"]     = eclv_module.w_init
@@ -4470,6 +4473,7 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             if _mpi_rank() == 0:
                 g_pfc = h5.create_group("mpfc")
                 g_pfc.attrs["n_cells"]     = mpfc_module.N
+                g_pfc.attrs["gid_first"]   = int(mpfc_module.population.tolist()[0])
                 g_pfc.attrs["K_eclv_mpfc"] = mpfc_module.K_eclv_mpfc
                 g_pfc.attrs["w_init"]      = mpfc_module.w_init
                 g_pfc.create_dataset("spk_times",   data=t_pfc.astype(np.float32), **compress)
@@ -4485,6 +4489,7 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
                     t_i, s_i = _gather_spikes(*_get_spikes(mpfc_module.spk_int))
                     g_i = h5.create_group("mpfc_int")
                     g_i.attrs["n_cells"] = mpfc_module.N_int
+                    g_i.attrs["gid_first"] = int(mpfc_module.INT.tolist()[0])
                     g_i.create_dataset("spk_times",   data=t_i.astype(np.float32), **compress)
                     g_i.create_dataset("spk_senders", data=s_i.astype(np.int32),   **compress)
                     c_i, _ = np.histogram(t_i, bins=edges)
@@ -4557,15 +4562,16 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
         h5.attrs["dg_present"] = dg_module is not None
         if dg_module is not None:
             dg_pops = [
-                ("dg_gc",      dg_module.N_gc),
-                ("dg_mc_low",  dg_module.N_mc_low),
-                ("dg_mc_high", dg_module.N_mc_high),
-                ("dg_basket",  dg_module.N_basket),
+                ("dg_gc",      dg_module.N_gc,      dg_module.GC),
+                ("dg_mc_low",  dg_module.N_mc_low,  dg_module.MC_LOW),
+                ("dg_mc_high", dg_module.N_mc_high, dg_module.MC_HIGH),
+                ("dg_basket",  dg_module.N_basket,  dg_module.BASKET),
             ]
-            for cache_key, n_cells in dg_pops:
+            for cache_key, n_cells, dg_nc in dg_pops:
                 t_spk, s_spk = spk_cache[cache_key]
                 g_dg = h5.create_group(cache_key)
                 g_dg.attrs["n_cells"] = int(n_cells)
+                g_dg.attrs["gid_first"] = int(dg_nc.tolist()[0])
                 g_dg.create_dataset("spk_times",   data=t_spk.astype(np.float32), **compress)
                 g_dg.create_dataset("spk_senders", data=s_spk.astype(np.int32),   **compress)
                 counts, _ = np.histogram(t_spk, bins=edges)
