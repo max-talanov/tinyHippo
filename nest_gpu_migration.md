@@ -4,6 +4,21 @@ Status: proposal, 2026-10-09. Based on a survey of how `replay_scaled.py` and `t
 NEST, plus a read of the `nest/nest-gpu` source (`pythonlib/nestgpu.py`, `src/`, `doc/`).
 Items marked **[verify]** were not confirmed and are the first things the Phase 0 spike must settle.
 
+## 0. Scope: which branch uses which backend
+
+Decision (2026-10-09), proposed by the project owner and refined here:
+
+| Branch | Backend | Why |
+|---|---|---|
+| `bio-plasticity` | **CPU NEST**, no GPU | Needs per-synapse tag state, pluggable `TagElement` backends, graded `V_seg` tag amplitude and possibly multi-compartment NESTML neurons. NEST GPU has one pair-STDP model and group-level neuron parameters. Its P1 step must reproduce `main` exactly, which is easiest on the backend that produced `main`. |
+| `llm-integration` | **NEST GPU, conditional on Phase 0** | The persistent sim server and the recall-latency target (under 60 s) are where simulation speed matters. It needs the full consolidation stack, so the GPU backend must first reproduce G1-G3. At 1% (~8k neurons) a GPU may not beat CPU, so the choice is made at L3 from measurements. |
+
+Consequences:
+- The Phase 1 backend shim lands on `main` **before** the branches fork, so each branch selects `--backend nest` or `--backend nestgpu` and stays mergeable.
+- Phase 0 runs now, alongside L0 (which has no model dependency).
+- If Phase 0 fails its gate (per-neuron `b`, connection get/set cost), `llm-integration` stays on CPU too.
+- Results from the two backends are not directly comparable; any GPU-derived number needs the Phase 2/3 equivalence check cited next to it.
+
 ## 1. What the code needs from the simulator
 
 PyNEST call counts in `replay_scaled.py` (5,873 lines) and `tiny.py`:

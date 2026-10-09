@@ -88,6 +88,7 @@ text.
 | Capacity | 3 patterns demonstrated | Measure a capacity and interference curve (L2) before building features on top of it |
 | Stochasticity | DG is chaotic from block to block (CLAUDE.md) | Recall returns a ranked list with confidence, and can repeat the cue and aggregate |
 | No kernel serialization | A NEST network cannot be saved and reloaded | Checkpoint = seed + flags + plastic weight arrays. Rebuild deterministically, then write the weights back through the hooks' SynapseCollections. |
+| Backend | CPU NEST is the validated reference; GPU port is unproven | This branch is the candidate for NEST GPU ([nest_gpu_migration.md](nest_gpu_migration.md) §0). **Conditional:** decided at L3 from Phase 0 numbers (recall latency, hook get/set cost, per-neuron `b`). The `bio-plasticity` branch stays on CPU. Use the `simbackend` shim (`--backend nest|nestgpu`) so the choice is a flag, not a fork. |
 
 ## 4. Phases
 
@@ -124,6 +125,7 @@ text.
 
 ### L3 — Persistent sim server and checkpointing
 
+0. **Backend decision.** Compare recall latency on `--backend nest` and `--backend nestgpu` at 1% and 12% (Phase 0 and 2 results). Choose GPU only if it wins and the G1/G2 gate reproduces on it; otherwise stay on CPU.
 1. Build a long-lived process holding the built network, with the endpoints
    `encode(code)`, `sleep(n_blocks)`, `recall(partial_code)` and
    `checkpoint()`/`restore()`.
@@ -166,6 +168,7 @@ text.
 | Capacity stays near a handful of patterns | Report it as the finding. The index-not-content design still works for small N, and L2 tells us early. |
 | Recall latency is too high | Reduced-scale server (1% or smaller, no MN5), cached builds, and short recall windows (one SWR window, not one block) |
 | Codec quality dominates the results | Keep the codec fixed across the model and baseline comparisons, and ablate it separately |
+| GPU backend does not reproduce the gate, or is no faster at 1% | Stay on CPU NEST; the shim makes this a flag. The decision is taken at L3, not before |
 | Coupling to research code | The service depends only on the CLI flags and the checkpoint format, never on `replay_scaled.py` internals |
 
 ## 6. First steps
@@ -173,4 +176,5 @@ text.
 - [ ] Now, on a short-lived branch or `main`: L0 skeleton, stub backend, benchmark
 - [ ] Once the gate passes: `git switch -c llm-integration <gate-commit>` and push
 - [ ] `--pattern-file` (L1) and the random-code G1 check at 1%
+- [ ] Phase 0 NEST GPU spike ([nest_gpu_migration.md](nest_gpu_migration.md)), in parallel with L0
 - [ ] Capacity sweep at 1% (L2), plus a RESULTS.md section

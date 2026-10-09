@@ -180,6 +180,7 @@ the most important scientific result the branch can produce.
 
 ## 5. Out of scope for this branch
 
+- **NEST GPU.** This branch stays on CPU NEST by decision ([nest_gpu_migration.md](nest_gpu_migration.md) §0): tag elements, `V_seg` and NESTML models need per-synapse and per-neuron flexibility NEST GPU lacks.
 - The full dendritic thr → junction → soma pipeline (spec §3.1, §4.1) with refractory
   junctions. That needs multi-compartment NESTML neurons, which would be a separate
   effort after P4.
