@@ -1638,6 +1638,86 @@ grouping produces the strong, consistent group-level code.
 population's `gid_first`. EC LII home groups need it, because at 6–7%
 active the lowest spiking GID is not reliably the first cell.
 
+## 27. JOB H12/H13 at 12%: the group code reaches EC LII, and the Schaffer result replicates on a second seed
+
+Three 12% runs, seed 202 or 303, `--pattern-source ca3`, 5.5h each:
+
+- **JOB H12:** `--schaffer-group-frac 0.7 --ca1-ec-group-frac 0.7`, seed 202.
+  Its control is JOB H11's grouped arm (§26).
+- **JOB H13:** JOB H11's uniform/grouped pair, repeated on seed 303.
+
+Same SWR-window group-rate analysis as §23 and §26: 2,000 block-label
+shuffles, p floor 0.0005.
+
+### A labelling pitfall, caught before reading the EC LII numbers
+
+These files were written by an MN5 copy of `replay_scaled.py` that predates
+the `gid_first` export (§26), so EC LII's first GID was not recorded. The
+lowest spiking EC LII GID is **not** the first cell: the GID span was
+11,993–12,003 of 12,005, because a few edge cells never fired. Using it
+shifted every home-group label by 1–3 cells. A shift that is not a multiple
+of 3 assigns each group to the wrong pattern. The first pass therefore gave
+H12 an EC LII z of −0.174, negative in 13 of 14 blocks: a consistent signal
+read with the wrong labels.
+
+**Fix.** I rebuilt the same configuration with `nest.Connect` disabled.
+Node IDs depend only on creation order, so this takes seconds without
+synapses. The rebuild reproduced the recorded CA3 SUP GIDs (57,961) and put
+every EC LII spike inside the recovered range. EC LII starts at
+**1,097,544** in all five runs, against 1,097,545–1,097,547 for the lowest
+spiking cell. The numbers below use the true first GID. Future runs record
+`gid_first` directly once MN5 has the current `replay_scaled.py`.
+
+### Results
+
+| run | CA1 PYR home-group z (modulation) | EC LII home-group z (modulation) |
+|---|---|---|
+| H11 uniform s202 | +0.089 (+0.1%), p=0.09 | +0.015 (+0.4%), p=0.23 |
+| H13 uniform s303 | +0.080 (+0.2%), p=0.04 | −0.031 (−1.0%), p=0.88 |
+| H11 Schaffer grouped s202 | **+0.788 (+21.0%)**, 14/14, p=0.0005 | +0.018 (+1.0%), p=0.24 |
+| H13 Schaffer grouped s303 | **+0.833 (+20.7%)**, 14/14, p=0.0005 | +0.022 (+0.6%), p=0.16 |
+| **H12 Schaffer + CA1→EC grouped s202** | **+0.789 (+17.3%)**, 14/14, p=0.0005 | **+0.297 (+15.9%), 14/14, p=0.0005** |
+
+- **The Schaffer result replicates on seed 303.** CA1 home-group z is
+  +0.833 (+20.7%) grouped vs +0.080 uniform. That makes two seeds at 12%,
+  so it is no longer a pilot under CLAUDE.md's rule.
+- **CA1→EC grouping carries the code into EC LII.** In H12, EC LII home
+  groups fire 15.9% more during their pattern's blocks, in every block
+  (z from 0.01 to 0.56). Without CA1→EC grouping, EC LII stays null on both
+  seeds. The pipeline's Jaccard table agrees: EC LII timing separation is
+  +0.216 in H12 vs +0.003 in its control, and EC LII is flagged as
+  discriminating by timing. §25's 1% failure fits this: CA1's modulation
+  there was only +10.8%, half the 12% value.
+
+### First G1 decoder, a preview of the gate
+
+Leave-one-block-out nearest-centroid classification on per-cell spike
+counts in 10 ms bins inside the SWR windows, with 1,000 label shuffles
+(p floor 0.001). Accuracy, with chance at 0.33:
+
+| run | CA1 PYR | EC LII | EC LV | mPFC |
+|---|---|---|---|---|
+| uniform s202 / s303 | 0.64 / 0.14 | 0.07 / 0.43 | 0.36 / 0.21 | 0.36 / 0.36 |
+| Schaffer grouped s202 / s303 | 0.71 / 0.79 (spike counts alone: 1.00 / 1.00, p=0.001) | 0.29 / 0.43 | 0.36 / 0.36 | 0.50 / 0.50 |
+| Schaffer + CA1→EC grouped s202 | 0.79 (counts: 1.00, p=0.001) | **0.57 (p=0.04)** | 0.29 | 0.29 |
+
+The pattern ID is perfectly decodable from CA1 rates whenever Schaffer is
+grouped. It becomes marginally decodable in EC LII with CA1→EC grouping.
+It is **not** decodable in EC LV or mPFC in any run, so **gate G1 is not
+met yet.** The remaining hops are all uniform: CA1→EC LV (K=30),
+EC LII→EC LV (K=20) and EC LV→mPFC (K=20). With 14 blocks, each class has
+only 4–5 blocks, so the decoder is weak. The gate runs need
+`--n-swr 28` or more, as the plan files specify.
+
+Replay quality varies from seed to seed in these runs. Forward ρ ranges
+from +0.34 to +0.69 and reverse ρ from −0.21 to −0.46, with no consistent
+effect of grouping. That needs watching for G3, but is not a regression
+signal yet.
+
+**Next:** JOB H14 replicates H12 on seed 303. Then cluster the cortical hops
+(CA1→EC LV, EC LII→EC LV, EC LV→mPFC) by the same home-group scheme, and run
+the gate with more blocks.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1682,15 +1762,17 @@ active the lowest spiking GID is not reliably the first cell.
   fix are: DG clustering at 12% (JOB H8), and whether block 0's recurring
   hot DG activity was an artifact of it being the only full-drive block.
 - **Schaffer clustering transmits CA3 group identity to CA1, replicated at
-  12%** (§23, §26): home-group z is +0.788 at 12% (+21% rate modulation,
-  14/14 blocks) vs +0.089 uniform, under `--pattern-source ca3`. Still to do:
-  a second seed (JOB H13), CA1→EC at 12% (JOB H12), and getting
+  12%, on two seeds** (§23, §26, §27): home-group z is +0.788 / +0.833 at
+  12% (seeds 202 / 303; about +21% rate modulation, 14/14 blocks), vs about
+  +0.08 uniform, under `--pattern-source ca3`. Still to do: getting
   EC-LII-sourced patterns into CA3 groups.
-- **CA1→EC LII clustering alone does not carry identity into EC LII**
-  (§25): EC LII home-group z is +0.001 with 70% grouped CA1 inputs. CA1's
-  group code is only a +10.8% rate modulation, and EC LII's output is set
-  by a fixed core of excitable cells. Next: a larger CA1 modulation (Schaffer
-  `group_frac` 1.0, or less CA1 saturation) before touching this hop again.
+- **CA1→EC LII grouping carries the code into EC LII at 12%** (§25, §27):
+  EC LII home-group z is +0.297 (+15.9%, 14/14 blocks) in JOB H12, against a
+  null at 1%, where CA1's modulation was half as large. Single seed; JOB H14
+  replicates it on seed 303.
+- **Gate G1 not met: EC LV and mPFC do not decode the pattern** (§27). Next:
+  group-cluster CA1→EC LV, EC LII→EC LV and EC LV→mPFC, and run the gate with
+  `--n-swr ≥ 28`.
 - **Why the ec-lii Schaffer tests were null** (§20–21): both the 1% pilot
   and the 12% JOB H10 retest came back null,
   with CA1 PYR identity separation at −0.008 vs. +0.004 at 12%. Both results

@@ -347,6 +347,15 @@
 #  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,SEED=303 run.sh
+#
+# JOB H14 — JOB H12 (CA1->EC grouped) on seed 303. RESULTS.md SS27: H12 put a
+#   group code into EC LII for the first time (home-group z +0.297, 14/14
+#   blocks, p=0.0005, +15.9%); single seed, so replicate. Controls already
+#   exist for s303 (JOB H13 both arms). scp replay_scaled.py too: H12/H13 ran
+#   on a copy without the gid_first export (commit c93bf63).
+#  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=303 run.sh
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)
