@@ -1718,6 +1718,41 @@ signal yet.
 (CA1→EC LV, EC LII→EC LV, EC LV→mPFC) by the same home-group scheme, and run
 the gate with more blocks.
 
+## 28. JOB H14: the EC LII group code replicates on seed 303, and the first cortical decoding appears
+
+JOB H14 repeats H12 (`--schaffer-group-frac 0.7 --ca1-ec-group-frac 0.7`,
+12%, `--pattern-source ca3`) on seed 303. It ran in 5.5h, and replay passed
+in both directions (ρ +0.615 / −0.570). Its control is JOB H13's grouped arm
+on the same seed. The file again lacks `gid_first`, because MN5 still runs
+the older `replay_scaled.py`. EC LII uses the recovered first GID,
+1,097,544. That value depends only on build flags, not on seed, and every
+spike falls inside its range.
+
+**New tool: `decode_identity.py`.** This is the home-group test and the G1
+decoder from §27, as a reusable script with an explicit `gid_first`
+source per population. It warns when it has to fall back to the unreliable
+lowest-spiking GID. Run on H12, it reproduces §27's numbers exactly.
+
+| seed 303 | CA1 PYR home z (mod.) | EC LII home z (mod.) | G1 counts acc: EC LII / EC LV / mPFC |
+|---|---|---|---|
+| H13 Schaffer grouped (control) | +0.833 (+20.7%) | +0.022 (+0.6%), p=0.13 | 0.50 / 0.36 / 0.43 (all n.s.) |
+| **H14 + CA1→EC grouped** | +0.766 (+18.4%) | **+0.442 (+35.4%), 14/14, p=0.001** | **0.64 (p=0.017) / 0.64 (p=0.009) / 0.64 (p=0.027)** |
+| H12 + CA1→EC grouped, seed 202 (§27) | +0.789 (+17.3%) | +0.297 (+15.9%), 14/14, p=0.001 | 0.29 / 0.00 / 0.21 (rate+timing: EC LII 0.57, p=0.04) |
+
+Chance accuracy is 0.33. The permutation floor is 0.001 (1,000 shuffles).
+
+- **The CA1→EC result replicates.** On two seeds, grouping CA1→EC LII
+  carries the group code into EC LII, with every block positive in both. The
+  effect is larger on seed 303.
+- **Cortex decodes weakly, on one seed only.** In H14, EC LV and mPFC
+  classify the pattern from spike counts above chance for the first time.
+  But this is p = 0.009–0.027 on one seed, across many tests, and H12 shows
+  nothing in either. **Gate G1 is still not met.** It needs p < 0.01 in mPFC
+  on ≥2 seeds.
+- In these runs, EC LV and mPFC receive only uniform random projections
+  (CA1→EC LV K=30, EC LII→EC LV K=20, EC LV→mPFC K=20). Group clustering of
+  those hops is the obvious next step, and the gate runs need `--n-swr ≥ 28`.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -1768,9 +1803,10 @@ the gate with more blocks.
   EC-LII-sourced patterns into CA3 groups.
 - **CA1→EC LII grouping carries the code into EC LII at 12%** (§25, §27):
   EC LII home-group z is +0.297 (+15.9%, 14/14 blocks) in JOB H12, against a
-  null at 1%, where CA1's modulation was half as large. Single seed; JOB H14
-  replicates it on seed 303.
-- **Gate G1 not met: EC LV and mPFC do not decode the pattern** (§27). Next:
+  null at 1%, where CA1's modulation was half as large. Replicated on seed
+  303 (JOB H14, §28): z +0.442, +35.4%.
+- **Gate G1 not met: EC LV and mPFC decode weakly on one seed only** (§27–28;
+  H14 mPFC 0.64, p=0.027; H12 at chance). Next:
   group-cluster CA1→EC LV, EC LII→EC LV and EC LV→mPFC, and run the gate with
   `--n-swr ≥ 28`.
 - **Why the ec-lii Schaffer tests were null** (§20–21): both the 1% pilot
