@@ -1712,6 +1712,11 @@ def build_dg_module(
     # field_centers must be in ec_lii's own creation-index order (i.e. the
     # array assign_place_fields(N_ec_lii, ...) returned in main()).
     ec_field_centers=None, dg_ec_cluster_sigma=0.0,
+    # Mossy-fibre grouping (RESULTS.md SS32): with the clustered perforant
+    # path each granule cell i sits at ring position i/N_gc, so its pattern is
+    # the pattern centre nearest that position; FRAC of each CA3 cell's mossy
+    # inputs then come from granule cells of its own sequence group's pattern.
+    mf_group_frac=0.0, n_seq_groups=None, n_patterns=None,
     # Heterogeneity for the DG pathway. The whole module used scalar weights and
     # delays, so a granule cell's K perforant inputs arrived at one instant with
     # one amplitude -- the synchrony ceiling that forces w_ec_dg down to 0.15
@@ -1897,10 +1902,31 @@ def build_dg_module(
     t_mf = time.perf_counter()
     K_mf_sup  = K("dg_mf_ca3_sup",  N_gc)
     K_mf_deep = K("dg_mf_ca3_deep", N_gc)
-    fixed_connect(GC, ca3_sup,  K_mf_sup,  w_mf_ca3_sup,
-                  jittered_delay(d_fast, delay_jitter), w_cv=w_cv)
-    fixed_connect(GC, ca3_deep, K_mf_deep, w_mf_ca3_deep,
-                  jittered_delay(d_fast, delay_jitter), w_cv=w_cv)
+    if mf_group_frac > 0:
+        # Pattern of each granule cell = pattern centre (p / n_patterns) nearest
+        # its clustered ring position i / N_gc; pattern of a CA3 cell = its
+        # sequence group (contiguous blocks) mod n_patterns. Weights, delays and
+        # w_cv exactly as the uniform call below -- only the sampling changes.
+        _pos = np.arange(N_gc) / N_gc
+        _cen = np.arange(n_patterns) / n_patterns
+        _d = np.abs(_pos[:, None] - _cen[None, :])
+        _gc_pat = np.argmin(np.minimum(_d, 1.0 - _d), axis=1)
+        print(f"  [DGModule] mossy-fibre grouping: group_frac={mf_group_frac} "
+              f"({n_patterns} patterns; GC pattern from clustered ring position)")
+        for _tgt, _K, _w, _off in [(ca3_sup, K_mf_sup, w_mf_ca3_sup, 37),
+                                   (ca3_deep, K_mf_deep, w_mf_ca3_deep, 41)]:
+            _n = len(_tgt)
+            _ca3_pat = np.minimum(np.arange(_n) // (_n // n_seq_groups),
+                                  n_seq_groups - 1) % n_patterns
+            grouped_fixed_connect(GC, _tgt, _K, _w, jittered_delay(d_fast, delay_jitter),
+                                  n_patterns, mf_group_frac, w_cv=w_cv,
+                                  seed=seed_connect + _off,
+                                  pre_group_of=_gc_pat, post_group_of=_ca3_pat)
+    else:
+        fixed_connect(GC, ca3_sup,  K_mf_sup,  w_mf_ca3_sup,
+                      jittered_delay(d_fast, delay_jitter), w_cv=w_cv)
+        fixed_connect(GC, ca3_deep, K_mf_deep, w_mf_ca3_deep,
+                      jittered_delay(d_fast, delay_jitter), w_cv=w_cv)
     n_mf = len(ca3_sup) * K_mf_sup + len(ca3_deep) * K_mf_deep
     print(f"  [DGModule] mossy fibres: ~{n_mf:,} synapses "
           f"(K_sup={K_mf_sup}, K_deep={K_mf_deep})  "
@@ -4912,6 +4938,14 @@ Dentate gyrus (Phase 6.2):
              "Requires --ec-lii and --schaffer-group-frac (without grouped "
              "Schaffer, CA1 home groups carry nothing to cluster on).")
     parser.add_argument(
+        "--mf-group-frac", type=float, default=0.0, metavar="FRAC",
+        help="RESULTS.md SS32: group the mossy fibres (DG GC -> CA3 SUP/DEEP) by "
+             "pattern -- the storage route in Treves & Rolls' theory. Each granule "
+             "cell's pattern is the pattern centre nearest its clustered ring "
+             "position (needs --dg-ec-cluster-sigma, i.e. --pattern-source ec-lii); "
+             "FRAC of each CA3 cell's mossy inputs come from granule cells of its "
+             "sequence group's pattern. Weights/delays/w_cv unchanged.")
+    parser.add_argument(
         "--ec-ca3-k", type=int, default=0, metavar="K",
         help="RESULTS.md SS30: in-degree of a direct EC LII -> CA3 (SUP and DEEP) "
              "perforant path, which exists in biology (~3,600 inputs per rat CA3 "
@@ -5305,6 +5339,9 @@ Dentate gyrus (Phase 6.2):
     if args.schaffer_group_frac > 0 and args.schaffer_k is None:
         parser.error("--schaffer-group-frac requires --schaffer-k (meaningless "
                       "at the default 100% dense Schaffer projection)")
+    if args.mf_group_frac > 0 and args.dg_ec_cluster_sigma <= 0:
+        parser.error("--mf-group-frac requires --dg-ec-cluster-sigma (granule cells "
+                      "only have a pattern when the perforant path is clustered)")
     if args.ec_ca3_k > 0 and not args.ec_lii:
         parser.error("--ec-ca3-k requires --ec-lii")
     if args.ec_ca3_group_frac > 0 and args.ec_ca3_k <= 0:
@@ -5603,6 +5640,9 @@ Dentate gyrus (Phase 6.2):
             w_cv         = args.w_cv,
             ec_field_centers    = ec_field_centers,
             dg_ec_cluster_sigma = args.dg_ec_cluster_sigma,
+            mf_group_frac = args.mf_group_frac,
+            n_seq_groups  = net["n_seq_groups"],
+            n_patterns    = max(1, net["n_patterns"]),
             # Was hardcoded to the default (42) regardless of --seed, so
             # every run drew the IDENTICAL granule-cell V_m/Poisson-residual
             # heterogeneity -- confirmed 2026-09-05 (jobs 45358807/45358815,

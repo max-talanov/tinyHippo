@@ -440,6 +440,7 @@ CORTEX_GROUP_FRAC=${CORTEX_GROUP_FRAC:-}       # RESULTS SS30: group-cluster CA1
 EC_CA3_K=${EC_CA3_K:-}                         # RESULTS SS30: direct EC LII->CA3 perforant path in-degree (~12)
 EC_CA3_W=${EC_CA3_W:-}                         #   its weight (default 0.5)
 EC_CA3_GROUP_FRAC=${EC_CA3_GROUP_FRAC:-}       #   group-cluster it (needs EC_CA3_K)
+MF_GROUP_FRAC=${MF_GROUP_FRAC:-}               # RESULTS SS32: group mossy fibres by pattern (needs DG_EC_CLUSTER_SIGMA)
 SCHAFFER_STDP=${SCHAFFER_STDP:-0}  # 1 = delay-aware STDP on CA3->CA1
 DELAY_JITTER=${DELAY_JITTER:-0}    # per-synapse axonal delay jitter (ms)
 NO_MPFC_ASSOC=${NO_MPFC_ASSOC:-0}  # 1 = no cortical plasticity (Test-3 control)
@@ -474,6 +475,7 @@ echo "[Slurm] schaffer_k=${SCHAFFER_K:-<default, 100% dense>}  schaffer_group_fr
 echo "[Slurm] ca1_ec_group_frac=${CA1_EC_GROUP_FRAC:-<none, uniform random>}"
 echo "[Slurm] cortex_group_frac=${CORTEX_GROUP_FRAC:-<none, uniform random>}"
 echo "[Slurm] ec_ca3_k=${EC_CA3_K:-<absent>}  ec_ca3_w=${EC_CA3_W:-<default>}  ec_ca3_group_frac=${EC_CA3_GROUP_FRAC:-<none>}"
+echo "[Slurm] mf_group_frac=${MF_GROUP_FRAC:-<none, uniform random>}"
 
 python3 - <<'PY'
 import nest
@@ -544,6 +546,7 @@ fi
 [ -n "$EC_CA3_K" ]                && PHASE_TAG="${PHASE_TAG}_eca3k${EC_CA3_K}"
 [ -n "$EC_CA3_W" ]                && PHASE_TAG="${PHASE_TAG}_eca3w${EC_CA3_W}"
 [ -n "$EC_CA3_GROUP_FRAC" ]       && PHASE_TAG="${PHASE_TAG}_eca3grp${EC_CA3_GROUP_FRAC}"
+[ -n "$MF_GROUP_FRAC" ]           && PHASE_TAG="${PHASE_TAG}_mfgrp${MF_GROUP_FRAC}"
 [ "$N_SWR" != "14" ]           && PHASE_TAG="${PHASE_TAG}_swr${N_SWR}"   # default 14 untagged: older names unchanged
 [ -n "$SEED" ]               && PHASE_TAG="${PHASE_TAG}_s${SEED}"
 OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc${PHASE_TAG}.h5"
@@ -566,6 +569,7 @@ OPTIONAL_FLAGS=""
 [ -n "$EC_CA3_K" ]          && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --ec-ca3-k $EC_CA3_K"
 [ -n "$EC_CA3_W" ]          && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --ec-ca3-w $EC_CA3_W"
 [ -n "$EC_CA3_GROUP_FRAC" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --ec-ca3-group-frac $EC_CA3_GROUP_FRAC"
+[ -n "$MF_GROUP_FRAC" ]     && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --mf-group-frac $MF_GROUP_FRAC"
 [ "$SCHAFFER_STDP" = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --schaffer-stdp"
 [ "$DELAY_JITTER" != "0" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --delay-jitter $DELAY_JITTER"
 [ "$NO_MPFC_ASSOC" = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --no-mpfc-assoc"
