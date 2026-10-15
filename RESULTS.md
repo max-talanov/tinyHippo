@@ -1862,6 +1862,53 @@ mPFC cell active during any replay as a single assembly. A specificity test
 needs one assembly per pattern, each cued in turn and scored against the
 others.
 
+## 31. The direct EC LII→CA3 path does not imprint the pattern on CA3 at biological strength (1% pilot)
+
+EC LII mode at 1%, with the full grouped chain (`--schaffer-group-frac`,
+`--ca1-ec-group-frac`, `--cortex-group-frac` 0.7), 14 blocks, seed 202,
+place-field-derived EC LII labels (§30). Four arms, with and without
+`--ec-ca3-k 12 --ec-ca3-group-frac 0.7`, scored with `decode_identity.py`:
+
+| arm | CA3 SUP group z (mod.) | CA1 home z | EC LII home z (mod.) |
+|---|---|---|---|
+| no EC→CA3 | +0.085 (+0.3%), p=0.22 | −0.080 | +1.354 (+150%), 14/14 |
+| w = 0.5 | +0.074 (+0.4%), p=0.19 | −0.221 | +1.322 (+109%), 14/14 |
+| w = 1.0 | +0.117 (+0.5%), p=0.06 | −0.210 | +1.332 (+159%), 14/14 |
+| w = 2.0 | +0.097 (+0.4%), p=0.11 | −0.017 | +1.347 (+107%), 14/14 |
+
+- **The place-field labels are right.** In every arm, EC LII's pattern
+  groups fire 2–2.5× harder in their own blocks, so the input side of the
+  new path carries the pattern strongly.
+- **CA3 does not pick it up.** Even at w = 2.0, four times the default,
+  CA3's pattern groups gain under 0.5%. The p values do not fall with
+  weight. CA3 SUP is 99.9% active, driven by theta and its recurrent
+  connections, so 12 extra inputs per cell are a negligible part of its
+  drive. In CA3 mode, the trigger and scaffold put a strong group-specific
+  drive on CA3 directly (z ≈ +1.0, §26). EC LII mode has nothing comparable.
+- With CA3 at chance, CA1 and everything downstream stay at chance too.
+  Replay is weak in every arm (ρ −0.25 to +0.21), as expected: in this mode
+  nothing drives the sequence.
+- **This matches the biology.** Treves & Rolls assign the perforant path
+  to the *recall cue* and the mossy fibres to *storage*. A weak cue
+  projection should not be expected to imprint patterns on its own. The
+  route through DG and the mossy fibres is the one that should, and it is
+  still uniform.
+
+**Options to close the EC LII → CA3 gap:**
+
+1. **Align the mossy fibres.** Each CA3 cell draws most of its mossy inputs
+   from granule cells whose inherited place field matches its pattern. This
+   is the storage route in the theory. It depends on DG carrying the pattern;
+   `--dg-ec-cluster-sigma` gives DG a weak code at 12% (§18–19).
+2. **A stronger perforant path.** Raise K well above the biological ratio,
+   or w past 2.0. That is easy to test, but it departs from the anatomy the
+   bio check just established.
+3. **Reduce CA3 saturation.** Weaker theta drive or more inhibition, so that
+   any input can modulate CA3. This changes the regime claims 1–2 were
+   validated in.
+
+The G1 gate in CA3 mode (JOB H15) does not depend on this gap and can run now.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
