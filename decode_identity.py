@@ -122,7 +122,11 @@ def analyse(path, gid_override, n_blocks, n_pat, n_perm, seed):
     for key in HOME_POPS:
         if key in pops:
             n = pops[key].shape[1]
-            groups[key] = [np.flatnonzero(np.arange(n) % G == g) for g in range(G)]
+            # saved labels win (EC LII under --pattern-source ec-lii follows place
+            # fields, not index); otherwise cell i -> group i % G
+            lab = (f[f"{key}/home_group"][:] if "home_group" in f[key]
+                   else np.arange(n) % G)
+            groups[key] = [np.flatnonzero(lab == g) for g in range(G)]
     pog = np.arange(G) % n_pat
     for key, idx in groups.items():
         c = pops[key].sum(2)

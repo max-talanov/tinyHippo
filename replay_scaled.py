@@ -648,7 +648,8 @@ def clustered_fixed_connect(pre, post, indegree, weight, delay, field_centers,
 
 
 def grouped_fixed_connect(pre, post, indegree, weight, delay, n_groups, group_frac,
-                           w_cv=None, compensate=True, seed=42, pre_group_of=None):
+                           w_cv=None, compensate=True, seed=42, pre_group_of=None,
+                           post_group_of=None):
     """Like fixed_connect, but each post neuron's `indegree` sources are drawn
     with a bias toward ONE of `n_groups` contiguous blocks `pre` is
     partitioned into, instead of uniformly across all of `pre`.
@@ -688,6 +689,11 @@ def grouped_fixed_connect(pre, post, indegree, weight, delay, n_groups, group_fr
     where the source (CA1 PYR) has no groups of its own and its "group" is the
     home group grouped_fixed_connect gave it as a Schaffer TARGET (index mod
     n_groups) -- so group g's identity can be followed one more hop.
+
+    `post_group_of` (optional, int array of len(post)): explicit home group per
+    post neuron, replacing index mod n_groups. Used when the target has groups
+    of its own (CA3: contiguous blocks) or labels set by place fields (EC LII
+    under --pattern-source ec-lii, see ec_lii_group_labels).
     """
     if w_cv is None:
         w_cv = _HET["w_cv"]
@@ -713,7 +719,9 @@ def grouped_fixed_connect(pre, post, indegree, weight, delay, n_groups, group_fr
     home_sets = [all_idx[pre_group_of == g] for g in range(n_groups)]
     other_idx = [all_idx[pre_group_of != g] for g in range(n_groups)]
 
-    post_home_group = np.arange(n_post) % n_groups
+    post_home_group = (np.arange(n_post) % n_groups if post_group_of is None
+                       else np.asarray(post_group_of))
+    assert len(post_home_group) == n_post, "post_group_of must label every post neuron"
     k_home_target = int(round(indegree * group_frac))
 
     for i in range(n_post):
@@ -884,6 +892,31 @@ def make_staggered_replay_drive(seq_groups, swr_start_ms, direction="forward",
 # random" input the DG selectivity question actually needs to be tested
 # against (Leutgeb et al.-style pattern separation), rather than the fully
 # disjoint CA3-group split used by the replay-direction trigger above.
+
+def ec_lii_group_labels(n_cells, n_groups, n_patterns, field_centers=None):
+    """Group label per EC LII cell, shared by every grouped EC LII projection.
+
+    Without place fields (--pattern-source ca3): cell i -> group i % n_groups,
+    the scheme used since RESULTS.md SS25. With place fields (--pattern-source
+    ec-lii) the cell's PATTERN is fixed by its field: p = the pattern centre
+    (p / n_patterns on the ring) nearest to its field centre. It is then given
+    one of p's sequence groups (g with g % n_patterns == p, as in
+    build_replay_network's `patterns`), cycling by cell index. Index-based labels
+    in that mode would fight the place-field code that actually drives EC LII.
+    """
+    idx = np.arange(n_cells)
+    if field_centers is None:
+        return idx % n_groups
+    centres = np.arange(n_patterns) / n_patterns
+    d = np.abs(np.asarray(field_centers)[:, None] - centres[None, :])
+    pat = np.argmin(np.minimum(d, 1.0 - d), axis=1)
+    out = np.empty(n_cells, dtype=int)
+    for p in range(n_patterns):
+        groups_p = np.arange(p, n_groups, n_patterns)
+        cells = np.flatnonzero(pat == p)
+        out[cells] = groups_p[np.arange(len(cells)) % len(groups_p)]
+    return out
+
 
 def assign_place_fields(n_cells, rng):
     """Fixed random preferred location per cell on a ring of circumference 1."""
@@ -2546,6 +2579,7 @@ class ECModule:
     N             : int
     K_ca1_ec   : int
     w_init     : float
+    group_of   : object = None   # int array: group label per EC LII cell (ec_lii_group_labels)
 
 
 
@@ -2635,6 +2669,7 @@ def build_ec_lii(
                                   # PRP accumulation.  Target: EC baseline ~8 Hz.
     w_bg         : float = 1.5,
     ca1_ec_group_frac: float = 0.0,  # >0: group-clustered CA1->EC (RESULTS SS25)
+    ec_group_of  : object = None,    # EC LII group labels (default: index mod n_groups)
     n_groups     : int   = None,     # CA3 sequence-group count (for the above)
     seed_connect : int   = 42,
 ) -> ECModule:
@@ -2735,7 +2770,8 @@ def build_ec_lii(
             jittered_delay(delay_ca1_ec, delay_jitter),
             n_groups, ca1_ec_group_frac, w_cv=0.0, compensate=False,
             seed=seed_connect + 7,
-            pre_group_of=np.arange(len(ca1_pyr)) % n_groups)
+            pre_group_of=np.arange(len(ca1_pyr)) % n_groups,
+            post_group_of=ec_group_of)
     else:
         nest.Connect(
             ca1_pyr,
@@ -2774,6 +2810,7 @@ def build_ec_lii(
         N             = N_ec_lii,
         K_ca1_ec      = K,
         w_init        = w_ca1_ec,
+        group_of      = ec_group_of,
     )
 
 
@@ -2906,7 +2943,8 @@ def build_ec_lv(
     delay_ca3  : float = 5.0,   # ms  — EC→CA3 feedback (longer, angular bundle)
     delay_jitter: float = 0.0,  # per-synapse jitter (Phase C); 0 = scalar
     delay_jitter_wcomp: float = 1.0,  # weight scale when jitter>0 (rate matching)
-    group_frac: float = 0.0,    # >0: group-cluster CA1->LV and LII->LV (RESULTS SS30)
+    group_frac: float = 0.0,    # >0: group-cluster CA1->LV, LII->LV, LV->CA3 (RESULTS SS30)
+    lii_group_of: object = None,  # EC LII group labels (default: index mod n_groups)
     n_groups  : int   = None,   # CA3 sequence-group count (for the above)
     seed_connect: int = 42,
 ) -> "ECLVModule":
@@ -2963,12 +3001,13 @@ def build_ec_lv(
     # cell i belong to group i mod n_groups (their own home groups), EC LV cell j
     # has home group j mod n_groups, and FRAC of its K inputs come from that
     # group. Weights/delays exactly as the uniform branch; only sampling changes.
-    def _lv_connect(pre, K, w, d, seed_off):
+    def _lv_connect(pre, K, w, d, seed_off, pre_groups=None):
         if group_frac > 0:
             grouped_fixed_connect(pre, EC_LV, K, w, d, n_groups, group_frac,
                                   w_cv=0.0, compensate=False,
                                   seed=seed_connect + seed_off,
-                                  pre_group_of=np.arange(len(pre)) % n_groups)
+                                  pre_group_of=(np.arange(len(pre)) % n_groups
+                                                if pre_groups is None else pre_groups))
         else:
             nest.Connect(pre, EC_LV,
                          conn_spec={"rule": "fixed_indegree", "indegree": K},
@@ -2988,16 +3027,24 @@ def build_ec_lv(
     K2 = min(K_eclii_lv, N_lii)
     t_c = _time.perf_counter()
     _lv_connect(ec_lii_pop, K2, float(w_eclii_lv) * (delay_jitter_wcomp if delay_jitter>0 else 1.0),
-                jittered_delay(delay_eclii, delay_jitter), 13)
+                jittered_delay(delay_eclii, delay_jitter), 13, lii_group_of)
     print(f"  [ECLVModule] ECLII→LV: {N_lv*K2:,} synapses in {_time.perf_counter()-t_c:.2f}s")
 
     # EC LV → CA3 SUP feedback  (closes the hippocampo-cortical loop)
     K3 = min(K_lv_ca3, N_lv)
     t_c = _time.perf_counter()
-    nest.Connect(EC_LV, ca3_sup,
-                 conn_spec={"rule": "fixed_indegree", "indegree": K3},
-                 syn_spec={"synapse_model": "static_synapse",
-                           "weight": float(w_lv_ca3), "delay": float(delay_ca3)})
+    if group_frac > 0:
+        # EC LV group j mod n_groups -> CA3 SUP sequence group (contiguous blocks)
+        grouped_fixed_connect(EC_LV, ca3_sup, K3, float(w_lv_ca3), float(delay_ca3),
+                              n_groups, group_frac, w_cv=0.0, compensate=False,
+                              seed=seed_connect + 19,
+                              pre_group_of=np.arange(N_lv) % n_groups,
+                              post_group_of=np.arange(N_ca3) // (N_ca3 // n_groups))
+    else:
+        nest.Connect(EC_LV, ca3_sup,
+                     conn_spec={"rule": "fixed_indegree", "indegree": K3},
+                     syn_spec={"synapse_model": "static_synapse",
+                               "weight": float(w_lv_ca3), "delay": float(delay_ca3)})
     print(f"  [ECLVModule] LV→CA3: {N_ca3*K3:,} synapses in {_time.perf_counter()-t_c:.2f}s")
 
     spk_lv = nest.Create("spike_recorder")
@@ -3183,7 +3230,14 @@ def build_mpfc(
 
     if recurrent:
         Kr = max(1, min(K_rec, N_pfc - 1))
-        fixed_connect(MPFC, MPFC, Kr, w_rec, delay_rec)
+        if group_frac > 0:
+            # recurrent assemblies along the same home groups (k mod n_groups),
+            # the cortical substrate a post-lesion cue has to complete (G2)
+            grouped_fixed_connect(MPFC, MPFC, Kr, w_rec, delay_rec, n_groups, group_frac,
+                                  seed=seed_connect + 23,
+                                  pre_group_of=np.arange(N_pfc) % n_groups)
+        else:
+            fixed_connect(MPFC, MPFC, Kr, w_rec, delay_rec)
         print(f"  [MPFCModule] recurrent mPFC->mPFC: K={Kr} w={w_rec} "
               f"delay={delay_rec} ms  (substrate for cortical pattern completion)")
 
@@ -4474,6 +4528,8 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
             g_ec = h5.create_group("ec_lii")
             g_ec.attrs["n_cells"]   = ec_module.N
             g_ec.attrs["gid_first"] = int(ec_module.population.tolist()[0])
+            if ec_module.group_of is not None:   # home group per cell (ec_lii_group_labels)
+                g_ec.create_dataset("home_group", data=np.asarray(ec_module.group_of, dtype=np.int32))
             g_ec.attrs["K_ca1_ec"]  = ec_module.K_ca1_ec
             g_ec.attrs["w_init"]    = ec_module.w_init
             g_ec.create_dataset("spk_times",   data=t_spk.astype(np.float32), **compress)
@@ -4856,14 +4912,33 @@ Dentate gyrus (Phase 6.2):
              "Requires --ec-lii and --schaffer-group-frac (without grouped "
              "Schaffer, CA1 home groups carry nothing to cluster on).")
     parser.add_argument(
+        "--ec-ca3-k", type=int, default=0, metavar="K",
+        help="RESULTS.md SS30: in-degree of a direct EC LII -> CA3 (SUP and DEEP) "
+             "perforant path, which exists in biology (~3,600 inputs per rat CA3 "
+             "cell; Treves & Rolls 1992) but was absent from the model. 0 (default) "
+             "= absent. ~12 matches the biological perforant:recurrent ratio "
+             "(~0.3) against CA3 SUP's recurrent in-degree of ~40.")
+    parser.add_argument("--ec-ca3-w", type=float, default=0.5, metavar="W",
+                        help="EC LII -> CA3 weight (weak, distal: K*w a few mV).")
+    parser.add_argument("--ec-ca3-delay", type=float, default=4.0, metavar="MS",
+                        help="EC LII -> CA3 delay (ms).")
+    parser.add_argument(
+        "--ec-ca3-group-frac", type=float, default=0.0, metavar="FRAC",
+        help="Group-cluster EC LII -> CA3: FRAC of a CA3 cell's EC inputs come from "
+             "EC LII cells with its sequence group's label (ec_lii_group_labels: "
+             "index mod n_groups, or place-field-derived under --pattern-source "
+             "ec-lii). Requires --ec-ca3-k > 0.")
+    parser.add_argument(
         "--cortex-group-frac", type=float, default=0.0, metavar="FRAC",
         help="RESULTS.md SS30: group-cluster the three uniform projections into "
              "cortex -- CA1 PYR->EC LV, EC LII->EC LV and EC LV->mPFC -- by the "
              "same index-mod-n_seq_groups home groups as --schaffer-group-frac / "
              "--ca1-ec-group-frac, so the group code can follow the pattern "
-             "into EC LV and mPFC. FRAC of each target cell's in-degree comes "
-             "from its home group; weights/delays unchanged. EC LV->CA3 feedback "
-             "stays uniform. Requires --ec-lv and --ca1-ec-group-frac.")
+             "into EC LV and mPFC. Also groups EC LV->CA3 feedback (onto the "
+             "matching CA3 sequence group) and, with --cortical-recall, the "
+             "mPFC recurrent collaterals. FRAC of each target cell's in-degree "
+             "comes from its home group; weights/delays unchanged. Requires "
+             "--ec-lv and --ca1-ec-group-frac.")
     parser.add_argument(
         "--cortical-recall", action="store_true",
         help="Test 3: consolidate, then LESION the hippocampus (zero CA1->EC), "
@@ -5230,6 +5305,10 @@ Dentate gyrus (Phase 6.2):
     if args.schaffer_group_frac > 0 and args.schaffer_k is None:
         parser.error("--schaffer-group-frac requires --schaffer-k (meaningless "
                       "at the default 100% dense Schaffer projection)")
+    if args.ec_ca3_k > 0 and not args.ec_lii:
+        parser.error("--ec-ca3-k requires --ec-lii")
+    if args.ec_ca3_group_frac > 0 and args.ec_ca3_k <= 0:
+        parser.error("--ec-ca3-group-frac requires --ec-ca3-k > 0")
     if args.cortex_group_frac > 0 and not (args.ec_lv and args.ca1_ec_group_frac > 0):
         parser.error("--cortex-group-frac requires --ec-lv and --ca1-ec-group-frac "
                       "(the group code must reach CA1 and EC LII before cortex)")
@@ -5412,7 +5491,18 @@ Dentate gyrus (Phase 6.2):
     # close the EC->DG->CA3->CA1->EC loop. EC LII itself only needs CA1, which
     # build_replay_network has already created.
     ec_module = None
+    # Place fields are drawn here, before build_ec_lii, so the EC LII group
+    # labels (ec_lii_group_labels) can follow them in --pattern-source ec-lii.
+    # They come from an independent numpy RNG (seed + 13), so drawing them
+    # earlier than before does not change their values.
+    ec_field_centers = None
+    if args.pattern_source == "ec-lii":
+        _pf_rng = np.random.default_rng(
+            (args.seed if args.seed is not None else 42) + 13)
+        ec_field_centers = assign_place_fields(N_ec_lii, _pf_rng)
     if args.ec_lii:
+        ec_group_of = ec_lii_group_labels(N_ec_lii, net["n_seq_groups"],
+                                          max(1, net["n_patterns"]), ec_field_centers)
         print(">>> Building EC LII/III module...")
         ec_module = build_ec_lii(
             ca1_pyr       = net["PYR"],
@@ -5424,6 +5514,7 @@ Dentate gyrus (Phase 6.2):
             ca1_ec_group_frac = args.ca1_ec_group_frac,
             n_groups      = net["n_seq_groups"],
             seed_connect  = (args.seed if args.seed is not None else 42),
+            ec_group_of   = ec_group_of,
         )
 
     # ---- Phase 7: encoding-direction pattern drive onto EC LII ---------------
@@ -5433,12 +5524,8 @@ Dentate gyrus (Phase 6.2):
     # because EC LII does not exist until build_ec_lii() has run. CA3 never
     # receives any direct pattern-specific injection in this mode -- see
     # build_replay_network's trigger_on/scaffold_on gating.
-    ec_field_centers = None   # only set below; --dg-ec-cluster-sigma needs it
     if args.pattern_source == "ec-lii":
         print(">>> Wiring encoding-direction place-field drive onto EC LII...")
-        _pf_rng = np.random.default_rng(
-            (args.seed if args.seed is not None else 42) + 13)
-        ec_field_centers = assign_place_fields(N_ec_lii, _pf_rng)
         n_pat = max(1, net["n_patterns"])
         for ep in range(max(1, n_epochs)):
             t0_ep = ep * SIM_MS
@@ -5462,6 +5549,34 @@ Dentate gyrus (Phase 6.2):
               f"{args.place_field_sigma}, base={args.ec_pattern_base_rate} Hz, "
               f"peak={args.ec_pattern_peak_rate} Hz  ** CA3 gets no direct "
               f"injection in this mode **")
+
+    # ---- Direct EC LII -> CA3 perforant path (RESULTS.md SS30) -------------
+    # Biology: EC layer II projects to DG AND directly to CA3 (~3,600 inputs per
+    # rat CA3 cell vs ~12,000 recurrent and ~46 mossy; Treves & Rolls 1992,
+    # Rolls 2007), and is proposed to carry the recall cue. Absent from the
+    # model until now. Off unless --ec-ca3-k > 0, so older builds are unchanged.
+    if ec_module is not None and args.ec_ca3_k > 0:
+        G_ = net["n_seq_groups"]
+        for _tgt, _gs, _name, _off in [(net["CA3_SUP"], len(net["ca3_sup_groups"][0]), "SUP", 29),
+                                       (net["CA3_DEEP"], len(net["ca3_deep_groups"][0]), "DEEP", 31)]:
+            _K = min(args.ec_ca3_k, N_ec_lii)
+            t_c = time.perf_counter()
+            if args.ec_ca3_group_frac > 0:
+                grouped_fixed_connect(
+                    ec_module.population, _tgt, _K, args.ec_ca3_w, args.ec_ca3_delay,
+                    G_, args.ec_ca3_group_frac, w_cv=0.0, compensate=False,
+                    seed=(args.seed if args.seed is not None else 42) + _off,
+                    pre_group_of=ec_module.group_of,
+                    post_group_of=np.minimum(np.arange(len(_tgt)) // _gs, G_ - 1))
+            else:
+                nest.Connect(ec_module.population, _tgt,
+                             conn_spec={"rule": "fixed_indegree", "indegree": _K},
+                             syn_spec={"synapse_model": "static_synapse",
+                                       "weight": float(args.ec_ca3_w),
+                                       "delay": float(args.ec_ca3_delay)})
+            print(f"    EC LII -> CA3 {_name}: K={_K} w={args.ec_ca3_w} "
+                  f"delay={args.ec_ca3_delay} ms group_frac={args.ec_ca3_group_frac} "
+                  f"({len(_tgt) * _K:,} synapses, {time.perf_counter() - t_c:.1f}s)")
 
     # ---- Phase C step 2: Schaffer STDP --------------------------------------
     schaffer_hook = None
@@ -5534,6 +5649,7 @@ Dentate gyrus (Phase 6.2):
             group_frac = args.cortex_group_frac,
             n_groups   = net["n_seq_groups"],
             seed_connect = (args.seed if args.seed is not None else 42),
+            lii_group_of = ec_module.group_of,
         )
         if args.mpfc:
             print(">>> Building mPFC module (Phase 3)...")
