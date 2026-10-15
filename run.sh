@@ -415,6 +415,7 @@ SCHAFFER_GROUP_FRAC=${SCHAFFER_GROUP_FRAC:-}   # Phase 12: bias reduced Schaffer
                                                # in-degree toward each CA1 cell's
                                                # home CA3 group (requires SCHAFFER_K)
 CA1_EC_GROUP_FRAC=${CA1_EC_GROUP_FRAC:-}       # RESULTS SS25: group-cluster CA1->EC LII by CA1 home group (needs SCHAFFER_GROUP_FRAC)
+CORTEX_GROUP_FRAC=${CORTEX_GROUP_FRAC:-}       # RESULTS SS30: group-cluster CA1->LV, LII->LV, LV->mPFC (needs CA1_EC_GROUP_FRAC)
 SCHAFFER_STDP=${SCHAFFER_STDP:-0}  # 1 = delay-aware STDP on CA3->CA1
 DELAY_JITTER=${DELAY_JITTER:-0}    # per-synapse axonal delay jitter (ms)
 NO_MPFC_ASSOC=${NO_MPFC_ASSOC:-0}  # 1 = no cortical plasticity (Test-3 control)
@@ -447,6 +448,7 @@ echo "[Slurm] novel_pattern_onset=${NOVEL_PATTERN_ONSET:-<none>}"
 echo "[Slurm] dg_ec_cluster_sigma=${DG_EC_CLUSTER_SIGMA:-<none, uniform random>}"
 echo "[Slurm] schaffer_k=${SCHAFFER_K:-<default, 100% dense>}  schaffer_group_frac=${SCHAFFER_GROUP_FRAC:-<none, uniform random>}"
 echo "[Slurm] ca1_ec_group_frac=${CA1_EC_GROUP_FRAC:-<none, uniform random>}"
+echo "[Slurm] cortex_group_frac=${CORTEX_GROUP_FRAC:-<none, uniform random>}"
 
 python3 - <<'PY'
 import nest
@@ -513,6 +515,8 @@ fi
 [ -n "$SCHAFFER_K" ]             && PHASE_TAG="${PHASE_TAG}_schk${SCHAFFER_K}"
 [ -n "$SCHAFFER_GROUP_FRAC" ]    && PHASE_TAG="${PHASE_TAG}_schgrp${SCHAFFER_GROUP_FRAC}"
 [ -n "$CA1_EC_GROUP_FRAC" ]      && PHASE_TAG="${PHASE_TAG}_ca1ecgrp${CA1_EC_GROUP_FRAC}"
+[ -n "$CORTEX_GROUP_FRAC" ]      && PHASE_TAG="${PHASE_TAG}_ctxgrp${CORTEX_GROUP_FRAC}"
+[ "$N_SWR" != "14" ]           && PHASE_TAG="${PHASE_TAG}_swr${N_SWR}"   # default 14 untagged: older names unchanged
 [ -n "$SEED" ]               && PHASE_TAG="${PHASE_TAG}_s${SEED}"
 OUTFILE="${OUTDIR}/replay_${SCALE}pct_stc${PHASE_TAG}.h5"
 echo "[Slurm] output → $OUTFILE"
@@ -530,6 +534,7 @@ OPTIONAL_FLAGS=""
 [ -n "$SCHAFFER_K" ]    && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --schaffer-k $SCHAFFER_K"
 [ -n "$SCHAFFER_GROUP_FRAC" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --schaffer-group-frac $SCHAFFER_GROUP_FRAC"
 [ -n "$CA1_EC_GROUP_FRAC" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --ca1-ec-group-frac $CA1_EC_GROUP_FRAC"
+[ -n "$CORTEX_GROUP_FRAC" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --cortex-group-frac $CORTEX_GROUP_FRAC"
 [ "$SCHAFFER_STDP" = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --schaffer-stdp"
 [ "$DELAY_JITTER" != "0" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --delay-jitter $DELAY_JITTER"
 [ "$NO_MPFC_ASSOC" = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --no-mpfc-assoc"

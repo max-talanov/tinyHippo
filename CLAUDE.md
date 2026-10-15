@@ -38,8 +38,11 @@ Claims 1 and 2 are validated at 12% scale. The open problem is **engram
 specificity** (claim 3). Cortical traces are sparse and persistent, but pattern
 identity does not yet carry from the hippocampus to cortex. Current work fixes
 the convergent, uniformly random projections one hop at a time with
-topographic or group clustering: EC LII→DG (`--dg-ec-cluster-sigma`), then
-CA3→CA1 Schaffer (`--schaffer-group-frac`). The next candidate is CA1→EC LII.
+topographic or group clustering: EC LII→DG (`--dg-ec-cluster-sigma`), CA3→CA1
+Schaffer (`--schaffer-group-frac`) and CA1→EC LII (`--ca1-ec-group-frac`) carry
+the code to EC LII at 12% on two seeds. The cortical hops (CA1→EC LV,
+EC LII→EC LV, EC LV→mPFC) are next, via `--cortex-group-frac`. Score runs with
+`decode_identity.py`.
 [RESULTS.md](RESULTS.md) has the up-to-date record; its "Open items" section is
 the current to-do list.
 
@@ -89,7 +92,12 @@ python replay_scaled.py --scale 1 --dg --dg-scale 2 --no-figures
   Jaccard identity metric useless there. Use rate-based readouts instead
   (per-group z-scores, rate-vector correlation, permutation tests).
 - **DG activity is chaotic across time blocks.** Report block-by-block activity,
-  not only whole-run means. Don't expect exact reproducibility even at a fixed
-  seed.
+  not only whole-run means.
+- **Runs are bit-identical at a fixed seed, config and thread count**
+  (RESULTS.md §29), but highly sensitive to any config change. Rerunning an
+  identical config adds nothing; replicate across seeds instead.
+- **Read cell positions from each population's `gid_first`**, never from the
+  lowest spiking GID. A silent edge cell shifts every home-group label
+  (RESULTS.md §27). `decode_identity.py` handles this.
 - Treat single-seed or 1%-only results as pilots until they replicate at 12%
   and across seeds.

@@ -5,7 +5,8 @@ Two tests per run, both on SWR-window spikes (300-420 and 600-720 ms of each
 1000 ms block), with significance from shuffling which pattern each block had:
 
 1. Home-group z (populations with home groups: CA3 SUP sequence groups, and cell
-   i -> group i % n_groups for CA1 PYR and EC LII). Each block's group-mean
+   i -> group i % n_groups for CA1 PYR, EC LII, EC LV and mPFC; the last two
+   only mean something with --cortex-group-frac). Each block's group-mean
    spike counts are z-scored across groups and averaged over the groups that
    belong to that block's pattern (group g is in pattern g % n_patterns).
 2. G1 decoder (the branch-plan gate): leave-one-block-out nearest-centroid
@@ -27,7 +28,7 @@ import numpy as np
 WINS = [(300.0, 420.0), (600.0, 720.0)]
 BIN = 10.0
 NBINS = int(sum((b - a) / BIN for a, b in WINS))
-HOME_POPS = ["ca1_pyr", "ec_lii"]
+HOME_POPS = ["ca1_pyr", "ec_lii", "ec_lv", "mpfc"]
 DECODE_POPS = ["ca1_pyr", "ec_lii", "ec_lv", "mpfc"]
 
 

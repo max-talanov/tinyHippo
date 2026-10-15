@@ -2906,6 +2906,9 @@ def build_ec_lv(
     delay_ca3  : float = 5.0,   # ms  — EC→CA3 feedback (longer, angular bundle)
     delay_jitter: float = 0.0,  # per-synapse jitter (Phase C); 0 = scalar
     delay_jitter_wcomp: float = 1.0,  # weight scale when jitter>0 (rate matching)
+    group_frac: float = 0.0,    # >0: group-cluster CA1->LV and LII->LV (RESULTS SS30)
+    n_groups  : int   = None,   # CA3 sequence-group count (for the above)
+    seed_connect: int = 42,
 ) -> "ECLVModule":
     """
     Build EC Layer V population and wire it into the hippocampo-cortical loop.
@@ -2956,21 +2959,36 @@ def build_ec_lv(
                    .clip(0.0, 6.0).tolist())
 
     # CA1 → EC LV  (fixed_indegree, static — fast connect)
+    # With group_frac > 0 both inputs are group-clustered: CA1 cell i and EC LII
+    # cell i belong to group i mod n_groups (their own home groups), EC LV cell j
+    # has home group j mod n_groups, and FRAC of its K inputs come from that
+    # group. Weights/delays exactly as the uniform branch; only sampling changes.
+    def _lv_connect(pre, K, w, d, seed_off):
+        if group_frac > 0:
+            grouped_fixed_connect(pre, EC_LV, K, w, d, n_groups, group_frac,
+                                  w_cv=0.0, compensate=False,
+                                  seed=seed_connect + seed_off,
+                                  pre_group_of=np.arange(len(pre)) % n_groups)
+        else:
+            nest.Connect(pre, EC_LV,
+                         conn_spec={"rule": "fixed_indegree", "indegree": K},
+                         syn_spec={"synapse_model": "static_synapse",
+                                   "weight": w, "delay": d})
+    if group_frac > 0:
+        print(f"  [ECLVModule] group clustering: group_frac={group_frac} "
+              f"({n_groups} groups, home group = index mod {n_groups})")
+
     K1 = min(K_ca1_lv, N_ca1)
     t_c = _time.perf_counter()
-    nest.Connect(ca1_pyr, EC_LV,
-                 conn_spec={"rule": "fixed_indegree", "indegree": K1},
-                 syn_spec={"synapse_model": "static_synapse",
-                           "weight": float(w_ca1_lv) * (delay_jitter_wcomp if delay_jitter>0 else 1.0), "delay": jittered_delay(delay_ca1, delay_jitter)})
+    _lv_connect(ca1_pyr, K1, float(w_ca1_lv) * (delay_jitter_wcomp if delay_jitter>0 else 1.0),
+                jittered_delay(delay_ca1, delay_jitter), 11)
     print(f"  [ECLVModule] CA1→LV: {N_lv*K1:,} synapses in {_time.perf_counter()-t_c:.2f}s")
 
     # EC LII → EC LV  (within-EC feedforward)
     K2 = min(K_eclii_lv, N_lii)
     t_c = _time.perf_counter()
-    nest.Connect(ec_lii_pop, EC_LV,
-                 conn_spec={"rule": "fixed_indegree", "indegree": K2},
-                 syn_spec={"synapse_model": "static_synapse",
-                           "weight": float(w_eclii_lv) * (delay_jitter_wcomp if delay_jitter>0 else 1.0), "delay": jittered_delay(delay_eclii, delay_jitter)})
+    _lv_connect(ec_lii_pop, K2, float(w_eclii_lv) * (delay_jitter_wcomp if delay_jitter>0 else 1.0),
+                jittered_delay(delay_eclii, delay_jitter), 13)
     print(f"  [ECLVModule] ECLII→LV: {N_lv*K2:,} synapses in {_time.perf_counter()-t_c:.2f}s")
 
     # EC LV → CA3 SUP feedback  (closes the hippocampo-cortical loop)
@@ -3051,6 +3069,9 @@ def build_mpfc(
     # gap -- subthreshold even before inhibition. 0.9 gives 18 mV, near enough
     # that the I_e-excitable tail can carry a reactivation.
     K_rec: int = 20, w_rec: float = 0.9, delay_rec: float = 4.0,
+    group_frac: float = 0.0,    # >0: group-cluster EC LV->mPFC (RESULTS SS30)
+    n_groups  : int   = None,
+    seed_connect: int = 42,
     int_frac     : float = 0.20,   # FS interneurons as a fraction of mPFC
     w_mpfc_ei    : float = 2.5,    # mPFC -> INT   (mirrors w_gc_basket)
     # Rebalanced for the sparse-cortex regime. At -7.0 the feedback volley was
@@ -3101,11 +3122,23 @@ def build_mpfc(
 
     # EC LV → mPFC
     t_c = _time.perf_counter()
-    nest.Connect(ec_lv_pop, MPFC,
-                 conn_spec={"rule": "fixed_indegree", "indegree": K},
-                 syn_spec={"synapse_model": "static_synapse",
-                           "weight": float(w_eclv_mpfc) * (delay_jitter_wcomp if delay_jitter>0 else 1.0),
-                           "delay": jittered_delay(delay_lv_mpfc, delay_jitter)})
+    _w_lv_pfc = float(w_eclv_mpfc) * (delay_jitter_wcomp if delay_jitter>0 else 1.0)
+    if group_frac > 0:
+        # EC LV cell j is in group j mod n_groups; mPFC cell k's home group is
+        # k mod n_groups (same scheme as build_ec_lv). Only sampling changes.
+        print(f"  [MPFCModule] LV->mPFC group clustering: group_frac={group_frac} "
+              f"({n_groups} groups)")
+        grouped_fixed_connect(ec_lv_pop, MPFC, K, _w_lv_pfc,
+                              jittered_delay(delay_lv_mpfc, delay_jitter),
+                              n_groups, group_frac, w_cv=0.0, compensate=False,
+                              seed=seed_connect + 17,
+                              pre_group_of=np.arange(len(ec_lv_pop)) % n_groups)
+    else:
+        nest.Connect(ec_lv_pop, MPFC,
+                     conn_spec={"rule": "fixed_indegree", "indegree": K},
+                     syn_spec={"synapse_model": "static_synapse",
+                               "weight": _w_lv_pfc,
+                               "delay": jittered_delay(delay_lv_mpfc, delay_jitter)})
     print(f"  [MPFCModule] LV→mPFC: {N_pfc*K:,} synapses in {_time.perf_counter()-t_c:.2f}s")
 
     # ---- Lateral inhibition: mPFC <-> FS interneurons --------------------
@@ -4823,6 +4856,15 @@ Dentate gyrus (Phase 6.2):
              "Requires --ec-lii and --schaffer-group-frac (without grouped "
              "Schaffer, CA1 home groups carry nothing to cluster on).")
     parser.add_argument(
+        "--cortex-group-frac", type=float, default=0.0, metavar="FRAC",
+        help="RESULTS.md SS30: group-cluster the three uniform projections into "
+             "cortex -- CA1 PYR->EC LV, EC LII->EC LV and EC LV->mPFC -- by the "
+             "same index-mod-n_seq_groups home groups as --schaffer-group-frac / "
+             "--ca1-ec-group-frac, so the group code can follow the pattern "
+             "into EC LV and mPFC. FRAC of each target cell's in-degree comes "
+             "from its home group; weights/delays unchanged. EC LV->CA3 feedback "
+             "stays uniform. Requires --ec-lv and --ca1-ec-group-frac.")
+    parser.add_argument(
         "--cortical-recall", action="store_true",
         help="Test 3: consolidate, then LESION the hippocampus (zero CA1->EC), "
              "cue part of the cortical assembly and measure how much of the rest "
@@ -5188,6 +5230,9 @@ Dentate gyrus (Phase 6.2):
     if args.schaffer_group_frac > 0 and args.schaffer_k is None:
         parser.error("--schaffer-group-frac requires --schaffer-k (meaningless "
                       "at the default 100% dense Schaffer projection)")
+    if args.cortex_group_frac > 0 and not (args.ec_lv and args.ca1_ec_group_frac > 0):
+        parser.error("--cortex-group-frac requires --ec-lv and --ca1-ec-group-frac "
+                      "(the group code must reach CA1 and EC LII before cortex)")
     if args.ca1_ec_group_frac > 0 and not (args.ec_lii and args.schaffer_group_frac > 0):
         parser.error("--ca1-ec-group-frac requires --ec-lii and "
                       "--schaffer-group-frac (CA1 home groups only carry CA3 "
@@ -5486,6 +5531,9 @@ Dentate gyrus (Phase 6.2):
             ca3_sup    = net["CA3_SUP"],
             delay_jitter = args.delay_jitter,
             delay_jitter_wcomp = args.delay_jitter_wcomp,
+            group_frac = args.cortex_group_frac,
+            n_groups   = net["n_seq_groups"],
+            seed_connect = (args.seed if args.seed is not None else 42),
         )
         if args.mpfc:
             print(">>> Building mPFC module (Phase 3)...")
@@ -5497,6 +5545,9 @@ Dentate gyrus (Phase 6.2):
                 w_rec = args.mpfc_w_rec,
                 delay_jitter = args.delay_jitter,
                 delay_jitter_wcomp = args.delay_jitter_wcomp,
+                group_frac = args.cortex_group_frac,
+                n_groups   = net["n_seq_groups"],
+                seed_connect = (args.seed if args.seed is not None else 42),
             )
 
     # ---- Plasticity hooks: after ALL populations are wired -------------------
