@@ -358,23 +358,24 @@
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=303 run.sh
 #
 # JOB H15 — gate G1 at 12%: cortical hops grouped (RESULTS.md SS30).
+#   Account/QOS go on the sbatch line (-A uab100 -q acc_resc), not in the header.
 #   --cortex-group-frac groups CA1->EC LV, EC LII->EC LV, EC LV->mPFC (and
 #   LV->CA3). Its 1% pilot could not test it: at 1% the group code already dies
 #   at EC LII (CA1 modulation ~7% vs ~20% at 12%, as in SS25), so cortex had
 #   nothing to receive. 28 blocks (~9 per pattern) for the G1 decoder; the
 #   control arms leave cortex uniform. Two seeds. ~10.5h each -> --time 13h.
 #   Score: python decode_identity.py --n-blocks 28 <h5...>
-#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#  sbatch -A uab100 -q acc_resc --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=202 run.sh
-#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#  sbatch -A uab100 -q acc_resc --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=303 run.sh
 #   controls (cortex uniform):
-#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#  sbatch -A uab100 -q acc_resc --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=202 run.sh
-#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#  sbatch -A uab100 -q acc_resc --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=303 run.sh
 #
@@ -386,14 +387,14 @@
 #   (z +0.42) and CA1 (z +0.30, p=0.036); CA1's response roughly doubles at 12%
 #   (SS26), so this is the real test. Control: same without mossy/EC->CA3
 #   grouping. 28 blocks, 2 seeds, ~11h each.
-#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#  sbatch -A uab100 -q acc_resc --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ec-lii,\
 #PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,EC_PATTERN_WEIGHT=1.5,\
 #DG_EC_CLUSTER_SIGMA=0.05,MF_GROUP_FRAC=0.7,EC_CA3_K=12,EC_CA3_W=1.0,EC_CA3_GROUP_FRAC=0.7,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=202 run.sh
 #   (repeat with SEED=303)
 #   control (no mossy / EC->CA3 grouping, no EC->CA3 path):
-#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#  sbatch -A uab100 -q acc_resc --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ec-lii,\
 #PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,EC_PATTERN_WEIGHT=1.5,\
 #DG_EC_CLUSTER_SIGMA=0.05,\
