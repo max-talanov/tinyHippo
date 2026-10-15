@@ -1964,6 +1964,53 @@ EC LII carries the pattern strongly in every arm (z ≈ +1.35).
     sequence.
   - Single seed.
 
+## 33. Gate G2 probe: pattern-specific cortical recall after the lesion
+
+The existing `--cortical-recall` probe (Test 3) treats every mPFC cell active
+during any replay as one assembly. It can show that cortex completes *a*
+pattern after the lesion, but not *which* one. Gate G2 needs the second.
+`pattern_recall_specificity()` adds that, and runs automatically after the
+old probe whenever `--n-patterns > 1`:
+
+1. **Functional assemblies from the consolidation run.** Each mPFC cell's mean
+   SWR-window spike count is computed per pattern. A cell is assigned to the
+   pattern it prefers, scored as preferred minus the mean of the rest,
+   relative to its mean. Each assembly keeps its m most strongly preferring
+   cells, with m equal across patterns, so no pattern wins by size. These are
+   defined by activity, not by the wiring groups.
+2. **Interleaved cue trials after the lesion and priming.** By default 4 per
+   pattern, 250 ms apart (`--g2-trials`, `--g2-iti`). Each trial cues
+   `--cr-cue-frac` of one assembly. In the following 80 ms, the response of
+   each assembly is the fraction of its cells that fire, excluding that
+   trial's cued cells.
+3. **Score.** Specificity per trial is the cued assembly's response minus
+   the mean of the others. Significance comes from shuffling which pattern
+   each trial cued (2,000 shuffles). A pre-cue window gives each assembly's
+   baseline. G2 passes at specificity > 0 with p < 0.01.
+
+Results are printed in the recall block of the log and saved to the HDF5
+group `g2_recall` (order, cue times, response matrix, baseline, cue_recall,
+specificity, assemblies; attributes `specificity_mean`, `p`).
+
+**End-to-end check** (1%, CA3 mode, full grouped chain, `--cortical-recall`,
+6 blocks; CLI-default priming of 250 Hz / w = 1.5):
+- three assemblies of 9 cells are built;
+- every cue fires its cued cells (cue_recall 1.00);
+- 12 trials are scored and the HDF5 group is written;
+- the result is null, as expected at 1% where mPFC has no group code (§30):
+  specificity −0.015, p = 0.69.
+
+Assembly 0 contained a few cells that fire spontaneously under that priming
+(baseline 0.11). Because every pattern is cued equally often, the bias
+cancels in the specificity score and the shuffle test. `run.sh` uses the
+validated subthreshold priming (120 Hz, w = 1.0).
+
+**JOB H17** runs G2 at 12%. It uses JOB H15's and JOB H16's grouped
+configurations plus `CORTICAL_RECALL=1`, which adds the grouped mPFC
+recurrent collaterals during training, so these are separate runs. Each
+has 28 blocks and runs on seeds 202 and 303, and the recall phase adds
+about 1.5h at 12%.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in

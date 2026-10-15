@@ -400,6 +400,23 @@
 #DG_EC_CLUSTER_SIGMA=0.05,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=202 run.sh
 #   (repeat with SEED=303)
+#
+# JOB H17 — gate G2 at 12%: pattern-specific cortical recall after the lesion
+#   (RESULTS.md SS33). Same grouped configurations as JOB H15 (CA3 mode) and
+#   JOB H16 (EC LII mode) plus CORTICAL_RECALL=1, which adds the (grouped)
+#   mPFC recurrent collaterals during training -- so these are their own runs.
+#   After 28 blocks: lesion, prime, then 12 interleaved cue trials (4 per
+#   pattern, 250 ms apart; ~1.5h extra at 12%). The log prints the G2 block;
+#   results are in the h5 group g2_recall. --time 15h.
+#  sbatch -A uab100 -q acc_resc --time=15:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,CORTICAL_RECALL=1,SEED=202 run.sh
+#  sbatch -A uab100 -q acc_resc --time=15:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ec-lii,\
+#PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,EC_PATTERN_WEIGHT=1.5,\
+#DG_EC_CLUSTER_SIGMA=0.05,MF_GROUP_FRAC=0.7,EC_CA3_K=12,EC_CA3_W=1.0,EC_CA3_GROUP_FRAC=0.7,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,CORTICAL_RECALL=1,SEED=202 run.sh
+#   (each repeated with SEED=303)
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)
@@ -471,6 +488,8 @@ CORTICAL_RECALL=${CORTICAL_RECALL:-0}   # 1 = lesion + cue + measure (Test 3)
 CR_CUE_FRAC=${CR_CUE_FRAC:-0.4}
 CR_PRIME_RATE=${CR_PRIME_RATE:-120}     # keep subthreshold: baseline must stay ~0
 CR_PRIME_WEIGHT=${CR_PRIME_WEIGHT:-1.0}
+G2_TRIALS=${G2_TRIALS:-}                       # RESULTS SS33: G2 cue trials per pattern (default 4)
+G2_ITI=${G2_ITI:-}                             #   ms between G2 cue trials (default 250)
 OUTDIR="results"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -599,6 +618,8 @@ OPTIONAL_FLAGS=""
 if [ "$CORTICAL_RECALL" = "1" ]; then
   OPTIONAL_FLAGS="$OPTIONAL_FLAGS --cortical-recall --cr-cue-frac $CR_CUE_FRAC"
   OPTIONAL_FLAGS="$OPTIONAL_FLAGS --cr-prime-rate $CR_PRIME_RATE --cr-prime-weight $CR_PRIME_WEIGHT"
+  [ -n "$G2_TRIALS" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --g2-trials $G2_TRIALS"
+  [ -n "$G2_ITI" ]    && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --g2-iti $G2_ITI"
 fi
 [ "$DG"     = "1" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --dg --dg-scale $DG_SCALE"
 [ "$HET" != "0" ] && OPTIONAL_FLAGS="$OPTIONAL_FLAGS --het $HET --het-wcomp $HET_WCOMP"

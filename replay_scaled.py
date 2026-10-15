@@ -2427,6 +2427,97 @@ def completion_index(spk_times, spk_senders, cued, uncued, win_start, win_stop):
                 n_uncued_fired=int(np.intersect1d(uncued, fired).size))
 
 
+def pattern_recall_specificity(mpfc_module, epoch_pattern, n_epochs, epoch_ms,
+                               swr_wins, t_start, n_patterns, cue_frac,
+                               trials_per_pattern=4, iti_ms=250.0, win_ms=80.0,
+                               n_perm=2000, seed=11):
+    """Gate G2: after the hippocampal lesion, does a partial cue of pattern p's
+    cortical assembly reactivate p's assembly rather than the others?
+
+    1. Assemblies are FUNCTIONAL, read from the consolidation run: each mPFC
+       cell's mean SWR-window spike count per pattern; a cell belongs to the
+       pattern it prefers most (strength = preferred minus mean of the rest,
+       relative to its mean). Each assembly keeps its m most strongly
+       preferring cells, m equal across patterns, so no pattern wins by size.
+    2. Interleaved trials from t_start, iti_ms apart: cue cue_frac of pattern
+       p's assembly (cortical_recall_probe), score [t, t + win_ms]. For every
+       assembly q, the response is the fraction of its cells that fired,
+       excluding that trial's cued cells.
+    3. Specificity per trial = response of the cued pattern's assembly minus
+       the mean response of the others. Significance: shuffle which pattern
+       each trial cued (n_perm). A pre-cue window gives the baseline.
+
+    Schedules the cues and simulates; returns a dict of results.
+    """
+    import nest
+    rng = np.random.default_rng(seed)
+    gids = np.asarray(mpfc_module.population.tolist(), dtype=np.int64)
+    g0, N = int(gids[0]), len(gids)
+    ev = nest.GetStatus(mpfc_module.spike_rec, "events")[0]
+    t, snd = np.asarray(ev["times"]), np.asarray(ev["senders"])
+    ep = (t // epoch_ms).astype(int)
+    r = t - ep * epoch_ms
+    m = np.zeros(len(t), bool)
+    for a, b in swr_wins:
+        m |= (r >= a) & (r <= b)
+    m &= ep < n_epochs
+    cnt = np.zeros((n_epochs, N))
+    np.add.at(cnt, (ep[m], snd[m] - g0), 1)
+    pats = np.asarray(epoch_pattern[:n_epochs])
+    R = np.stack([cnt[pats == q].mean(0) if (pats == q).any() else np.zeros(N)
+                  for q in range(n_patterns)])                     # (P, N)
+    pref = np.argmax(R, 0)
+    others = (R.sum(0) - R.max(0)) / max(n_patterns - 1, 1)
+    strength = (R.max(0) - others) / (R.mean(0) + 1e-9)
+    ok = R.max(0) > 0
+    cand = [np.flatnonzero(ok & (pref == q) & (strength > 0)) for q in range(n_patterns)]
+    msize = min(len(c) for c in cand)
+    if msize < 4:
+        return dict(ok=False, reason=f"assemblies too small (min {msize} cells)")
+    assemblies = [gids[c[np.argsort(-strength[c])][:msize]] for c in cand]
+
+    order = []
+    for _ in range(trials_per_pattern):
+        order += list(rng.permutation(n_patterns))
+    order = np.asarray(order)
+    t_cues = t_start + iti_ms * np.arange(len(order))
+    cued = []
+    for k, q in enumerate(order):
+        c, _u = cortical_recall_probe(mpfc_module, assemblies[q], cue_frac,
+                                      float(t_cues[k]), rng=rng)
+        cued.append(c)
+    nest.Simulate(float(t_cues[-1] - nest.GetKernelStatus("biological_time")
+                        + iti_ms))
+    ev = nest.GetStatus(mpfc_module.spike_rec, "events")[0]
+    t, snd = np.asarray(ev["times"]), np.asarray(ev["senders"])
+
+    def resp(w0, w1, exclude):
+        fired = np.unique(snd[(t >= w0) & (t <= w1)])
+        out = []
+        for A in assemblies:
+            A_ = np.setdiff1d(A, exclude)
+            out.append(np.intersect1d(A_, fired).size / max(A_.size, 1))
+        return np.asarray(out)
+
+    Rt = np.stack([resp(tc, tc + win_ms, cued[k]) for k, tc in enumerate(t_cues)])
+    base = resp(t_start - win_ms - 20.0, t_start - 20.0, np.array([], dtype=np.int64))
+    cue_recall = np.array([np.isin(cued[k], np.unique(
+        snd[(t >= tc) & (t <= tc + win_ms)])).mean() for k, tc in enumerate(t_cues)])
+
+    def spec(lab):
+        own = Rt[np.arange(len(lab)), lab]
+        oth = (Rt.sum(1) - own) / max(n_patterns - 1, 1)
+        return own - oth
+    sp = spec(order)
+    null = np.array([spec(rng.permutation(order)).mean() for _ in range(n_perm)])
+    p = (np.sum(null >= sp.mean()) + 1) / (n_perm + 1)
+    return dict(ok=True, assembly_size=int(msize), order=order, t_cues=t_cues,
+                responses=Rt, baseline=base, cue_recall=cue_recall,
+                specificity=sp, specificity_mean=float(sp.mean()), p=float(p),
+                own=np.array([Rt[k, q] for k, q in enumerate(order)]),
+                assemblies=np.stack(assemblies))
+
+
 def run_pattern_completion(cfg, n_threads, cue_fracs,
                            ablate=False, cue_rate=2600.0, cue_weight=2.5,
                            cue_dur_ms=16.0, win_ms=60.0, gap_ms=150.0,
@@ -4533,6 +4624,17 @@ def save_replay_hdf5(net, sim_ms, scale_label, outpath, bin_ms=10.0,
 
         h5.create_dataset("times_ms", data=times_ms)
 
+        # Gate G2: pattern-specific cortical recall after the lesion (SS33)
+        _g2 = net.get("g2_recall")
+        if _g2 and _g2.get("ok"):
+            g2 = h5.create_group("g2_recall")
+            for _k in ["order", "t_cues", "responses", "baseline", "cue_recall",
+                       "specificity", "own", "assemblies"]:
+                g2.create_dataset(_k, data=np.asarray(_g2[_k]))
+            g2.attrs["specificity_mean"] = _g2["specificity_mean"]
+            g2.attrs["p"] = _g2["p"]
+            g2.attrs["assembly_size"] = _g2["assembly_size"]
+
         # --- per-population groups -------------------------------------------
         for h5_key, pop_key, spk_key in pop_map:
             t_spk, s_spk = spk_cache[h5_key]
@@ -4981,6 +5083,13 @@ Dentate gyrus (Phase 6.2):
              "should survive hippocampal removal. Requires --mpfc; forces "
              "recurrent mPFC collaterals, without which cortex has nothing to "
              "complete a pattern with and the test is a guaranteed null.")
+    parser.add_argument(
+        "--g2-trials", type=int, default=4, metavar="N",
+        help="Gate G2 (with --cortical-recall and --n-patterns > 1): cue trials "
+             "PER PATTERN after the lesion. Each costs --g2-iti ms of sim time "
+             "(~1250 s wall per sim second at 12%%).")
+    parser.add_argument("--g2-iti", type=float, default=250.0, metavar="MS",
+                        help="Gate G2: interval between cue trials (ms).")
     parser.add_argument(
         "--cr-prime-rate", type=float, default=250.0, metavar="HZ",
         help="Tonic Poisson drive to mPFC after the lesion, holding cells near "
@@ -5872,6 +5981,36 @@ Dentate gyrus (Phase 6.2):
             else:
                 print("  [FLAG] no cortical recall above baseline: the trace exists in")
                 print("         weights but cannot reconstruct the pattern on its own.")
+
+            # 4. Gate G2: pattern-specific recall (RESULTS.md SS33). Only
+            # meaningful with more than one pattern.
+            if net["n_patterns"] > 1:
+                _g2 = pattern_recall_specificity(
+                    mpfc_module, net["epoch_pattern"], n_epochs, SIM_MS,
+                    [swr_fwd, swr_rev],
+                    t_start=float(nest.GetKernelStatus("biological_time")) + 300.0,
+                    n_patterns=net["n_patterns"], cue_frac=args.cr_cue_frac,
+                    trials_per_pattern=args.g2_trials, iti_ms=args.g2_iti)
+                net["g2_recall"] = _g2
+                print(f"\n  --- G2: pattern-specific cortical recall after the lesion ---")
+                if not _g2["ok"]:
+                    print(f"  [SKIP] {_g2['reason']}")
+                else:
+                    print(f"  assemblies: {net['n_patterns']} x {_g2['assembly_size']} mPFC cells "
+                          f"(functional, from the consolidation run)")
+                    print(f"  cue {args.cr_cue_frac*100:.0f}% of one assembly per trial, "
+                          f"{len(_g2['order'])} trials; cue_recall {_g2['cue_recall'].mean():.2f}")
+                    for _q in range(net["n_patterns"]):
+                        _k = _g2["order"] == _q
+                        _row = _g2["responses"][_k].mean(0)
+                        print(f"  cue pattern {_q}: responses per assembly "
+                              + "  ".join(f"{_x:.3f}" for _x in _row))
+                    print(f"  pre-cue baseline per assembly "
+                          + "  ".join(f"{_x:.3f}" for _x in _g2["baseline"]))
+                    print(f"  specificity (own - others) = {_g2['specificity_mean']:+.3f}  "
+                          f"perm p = {_g2['p']:.4f}")
+                    print("  [PASS] G2" if (_g2["p"] < 0.01 and _g2["specificity_mean"] > 0)
+                          else "  [FLAG] G2 not met (needs specificity > 0 at p < 0.01)")
         print(f"{'='*72}")
 
     # ---- Phase 4: Synaptic Homeostasis (after all SWR epochs) ---------------
