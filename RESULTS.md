@@ -1784,6 +1784,84 @@ Two consequences:
    and any A/B arm difference reflects that arm's configuration plus chaotic
    sensitivity, which is why every comparison here uses ≥2 seeds.
 
+## 30. Grouping every projection on the pattern path, plus a missing EC LII→CA3 path (bio check)
+
+### Bio-realism check
+
+Done before adding anything:
+
+| Projection | Biology (rat) | Model | Action |
+|---|---|---|---|
+| **EC LII → CA3** | Exists. Layer II projects to DG *and* CA3/CA2; layer III projects to CA1 and subiculum. About 3,600–4,000 perforant-path inputs per CA3 cell, against ~12,000 recurrent and ~46–50 mossy-fibre inputs. Proposed role: the recall cue, while the mossy fibres drive storage (Treves & Rolls 1992; Rolls 2007, Fig. 2). | absent | **added** |
+| CA1 → EC | Mainly to the deep layers (EC LV); the superficial layers are the input side | CA1→EC LII K=50 (the STC site) plus CA1→EC LV K=30 | flagged, not changed: CA1→EC LII is the consolidation site behind claim 1 |
+| EC LV → CA3 | Weak; the loop closes mainly through deep→superficial EC connections | EC LV→CA3 SUP K=5 | flagged; an EC LV→EC LII link would be more realistic |
+| Grouped wiring | Topography exists along the septotemporal and proximodistal axes; there is no evidence for pattern-specific point-to-point wiring | `--*-group-frac` | modelling assumption, a stand-in for assemblies that plasticity should form (plasticity plan, P4) |
+
+### What changed (commits 2dd6b97, 0f83cb7)
+
+- **`--cortex-group-frac`** groups CA1→EC LV, EC LII→EC LV, EC LV→mPFC, EC LV→CA3
+  (onto the matching CA3 sequence group) and, with `--cortical-recall`, the
+  mPFC recurrent collaterals.
+- **`--ec-ca3-k/-w/-delay/-group-frac`** add the direct EC LII→CA3 SUP+DEEP
+  path. K ≈ 12 matches the biological perforant:recurrent ratio of ~0.3,
+  measured against CA3 SUP's recurrent in-degree of ~40. Defaults:
+  w = 0.5 (weak, distal), 4 ms delay. With K = 0 it is absent.
+- **`ec_lii_group_labels`:** one label per EC LII cell, shared by every
+  grouped EC LII projection.
+  - In CA3 mode it is the cell index mod n_groups, as before.
+  - In EC LII mode it is derived from the cell's place field: nearest pattern
+    centre p, then one of p's groups. Before, CA1→EC LII was grouped by index,
+    so labels matched the place-field pattern for only 32.5% of cells, i.e.
+    chance. That fought the code that actually drives EC LII.
+  - Place fields are now drawn before `build_ec_lii`. They use the same
+    independent RNG, so the values are unchanged.
+  - The labels are saved to the HDF5 file as `ec_lii/home_group`, and
+    `decode_identity.py` uses them. It now also tests EC LV and mPFC home
+    groups.
+- **Verified at 1%:**
+  - With every grouping off, all seven projections hash identically to the
+    previous commit.
+  - Existing CA3-mode grouping is unchanged.
+  - Grouped in-degrees are exact. Home-group fractions are 0.700, except
+    where K or the group size forces rounding: 4/5 for LV→CA3, 8/12 for
+    EC→CA3, and 12/20 for mPFC recurrent at 1%, where a group has only 12
+    cells; at 12% it has 41.
+  - In EC LII mode, 100% of EC LII labels match their place-field pattern.
+- **`run.sh`:**
+  - New variables `CORTEX_GROUP_FRAC`, `EC_CA3_K`, `EC_CA3_W` and
+    `EC_CA3_GROUP_FRAC`.
+  - Filenames are tagged with N_SWR when it is not the default 14, so 28-block
+    runs cannot overwrite 14-block ones.
+  - **JOB H15** is the 12% G1 gate: the full grouped chain in CA3 mode,
+    28 blocks, seeds 202 and 303, each with a control that leaves cortex
+    uniform.
+
+### The cortical grouping cannot be tested at 1%
+
+The 1% pilot used CA3 mode, Schaffer and CA1→EC grouped, 28 blocks, seed
+202, with or without `--cortex-group-frac 0.7`. It was scored with
+`decode_identity.py`:
+
+| 1%, 28 blocks | CA1 home z (mod.) | EC LII home z | EC LV / mPFC home z | mPFC decoder (counts) |
+|---|---|---|---|---|
+| cortex uniform | +0.441 (+7.7%) | +0.048 (p=0.23) | −0.039 / +0.027 | 0.57 (p=0.019) |
+| cortex grouped 0.7 | +0.479 (+7.2%) | +0.069 (p=0.16) | −0.023 / −0.143 | 0.57 (p=0.015) |
+
+At 1%, CA1's group modulation is about 7%, against about 20% at 12% (§26).
+EC LII therefore stays null, as in §25, and the cortical grouping has nothing
+to pass on. The mPFC decoder scores the same in both arms, so it is not
+reading the group code. **The cortical hops can only be tested at 12%:
+JOB H15.**
+
+The EC LII→CA3 path *can* be piloted at 1%, because in EC LII mode the
+place-field drive makes EC LII pattern-specific directly. That pilot is
+running: no EC→CA3, and K=12 grouped at w = 0.5, 1.0 and 2.0.
+
+**G2 needs a new probe.** The current `--cortical-recall` probe treats every
+mPFC cell active during any replay as a single assembly. A specificity test
+needs one assembly per pattern, each cued in turn and scored against the
+others.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in

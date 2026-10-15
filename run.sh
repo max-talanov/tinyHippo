@@ -356,6 +356,27 @@
 #  sbatch --time=08:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=14,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=303 run.sh
+#
+# JOB H15 — gate G1 at 12%: cortical hops grouped (RESULTS.md SS30).
+#   --cortex-group-frac groups CA1->EC LV, EC LII->EC LV, EC LV->mPFC (and
+#   LV->CA3). Its 1% pilot could not test it: at 1% the group code already dies
+#   at EC LII (CA1 modulation ~7% vs ~20% at 12%, as in SS25), so cortex had
+#   nothing to receive. 28 blocks (~9 per pattern) for the G1 decoder; the
+#   control arms leave cortex uniform. Two seeds. ~10.5h each -> --time 13h.
+#   Score: python decode_identity.py --n-blocks 28 <h5...>
+#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=202 run.sh
+#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=303 run.sh
+#   controls (cortex uniform):
+#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=202 run.sh
+#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=303 run.sh
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)
