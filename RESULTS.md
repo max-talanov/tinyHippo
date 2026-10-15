@@ -1909,6 +1909,61 @@ place-field-derived EC LII labels (§30). Four arms, with and without
 
 The G1 gate in CA3 mode (JOB H15) does not depend on this gap and can run now.
 
+## 32. Mossy-fibre grouping carries an EC LII-sourced pattern into CA3 and, weakly, into CA1 (1% pilot)
+
+After §31, option 1: `--mf-group-frac` (commit d92310f) groups the mossy
+fibres by pattern, the storage route in Treves & Rolls' theory.
+
+**How it works.** With `--dg-ec-cluster-sigma`, granule cell i sits at ring
+position i/N_gc and samples its EC LII inputs around that point. Its
+pattern is therefore the pattern centre nearest i/N_gc. FRAC of each CA3
+cell's mossy inputs come from granule cells of its own sequence group's
+pattern.
+
+**Verified at 1%:**
+- For 98.3% of granule cells, the assigned pattern matches the circular mean
+  of their actual EC LII inputs' place fields.
+- With the flag off, the mossy fibres are hash-identical to the previous
+  commit.
+- With the flag on, same-pattern mossy inputs rise from 0.333 (chance) to
+  0.667 for SUP (10/15) and 0.750 for DEEP (6/8). In-degrees are exact and
+  the weight heterogeneity is unchanged.
+
+**Pilot.** 1% scale, EC LII mode, `--dg-ec-cluster-sigma 0.05`, Schaffer,
+CA1→EC and cortex grouped 0.7, 14 blocks, seed 202:
+
+| arm | CA3 SUP group z (mod.) | CA1 home z |
+|---|---|---|
+| mossy uniform | +0.060 (+0.3%), p=0.28 | −0.206 |
+| mossy grouped 0.7 | +0.280 (+0.9%), 11/14, p=0.001 | +0.054 |
+| mossy grouped 1.0 | +0.383 (+1.6%), 11/14, p=0.001 | **+0.304, p=0.028** |
+| mossy 0.7 + direct EC→CA3 (K=12, w=1.0, grouped 0.7) | +0.418 (+1.5%), 10/14, p=0.0005 | **+0.299, p=0.036** |
+
+EC LII carries the pattern strongly in every arm (z ≈ +1.35).
+
+- **DG is pattern-selective.** Granule cells of the active pattern fire
+  +42–45% more, in 13 of 14 blocks, in both the uniform and grouped arms.
+  The loss happens at the DG→CA3 step: a +45% DG signal becomes about +1%
+  in CA3, which is 99.9% active and driven mostly by theta and its recurrent
+  connections. That is the same saturation that blocked the direct path
+  (§31).
+- **The mossy fibres are the stronger route.** Their weights (about 5.7,
+  the "detonator" synapses) get the code into CA3 where the direct path
+  alone could not: z +0.28 to +0.38, against +0.07 to +0.12.
+- **The pattern reaches CA1 for the first time from EC LII input**, weakly,
+  with z ≈ +0.30 at p ≈ 0.03. At 1%, CA1's response has always been about
+  half the 12% value (CA1 modulation +7% at 1% vs +20% at 12% for the same
+  CA3 drive, §26, §30). So 12% is the real test.
+- Both biological routes together (mossy 0.7 plus direct 0.7) match mossy
+  1.0 while staying closer to the anatomy. That is the configuration for
+  **JOB H16**: 12%, EC LII mode, 28 blocks, seeds 202 and 303, each paired
+  with a control without mossy grouping or the direct path.
+- Caveats:
+  - DG runs hot at 1% (17.5% active, 5–62% per block, against 2–4% at 12%).
+  - Replay is weak in EC LII mode in every arm, because nothing drives the
+    sequence.
+  - Single seed.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in

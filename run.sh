@@ -377,6 +377,28 @@
 #  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,SEED=303 run.sh
+#
+# JOB H16 — the full gate path in EC LII mode at 12% (RESULTS.md SS32).
+#   Pattern enters through EC LII place fields (the model's intended input),
+#   EC->DG clustered, mossy fibres grouped 0.7 PLUS the direct EC LII->CA3 path
+#   (K=12, w=1.0, grouped 0.7) -- both biological routes. At 1% this is the
+#   first configuration that carries an EC-sourced pattern into CA3 groups
+#   (z +0.42) and CA1 (z +0.30, p=0.036); CA1's response roughly doubles at 12%
+#   (SS26), so this is the real test. Control: same without mossy/EC->CA3
+#   grouping. 28 blocks, 2 seeds, ~11h each.
+#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ec-lii,\
+#PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,EC_PATTERN_WEIGHT=1.5,\
+#DG_EC_CLUSTER_SIGMA=0.05,MF_GROUP_FRAC=0.7,EC_CA3_K=12,EC_CA3_W=1.0,EC_CA3_GROUP_FRAC=0.7,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=202 run.sh
+#   (repeat with SEED=303)
+#   control (no mossy / EC->CA3 grouping, no EC->CA3 path):
+#  sbatch --time=13:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ec-lii,\
+#PLACE_FIELD_SIGMA=0.15,EC_PATTERN_BASE_RATE=20,EC_PATTERN_PEAK_RATE=800,EC_PATTERN_WEIGHT=1.5,\
+#DG_EC_CLUSTER_SIGMA=0.05,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,SEED=202 run.sh
+#   (repeat with SEED=303)
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)
