@@ -1753,6 +1753,37 @@ Chance accuracy is 0.33. The permutation floor is 0.001 (1,000 shuffles).
   (CA1→EC LV K=30, EC LII→EC LV K=20, EC LV→mPFC K=20). Group clustering of
   those hops is the obvious next step, and the gate runs need `--n-swr ≥ 28`.
 
+## 29. A rerun of JOB H14 is bit-identical: fixed seed and configuration reproduce exactly, and the recovered GID is confirmed
+
+MN5 job 47281308 reran JOB H14's exact configuration (12%, seed 303, 50
+threads), this time with the current `replay_scaled.py`. Compared spike by
+spike with the original (job 47247042, a day earlier), **every population's
+spike train is identical**: CA3 SUP 8,590,419, CA1 PYR 6,107,522, DG GC
+242,561, EC LII 79,395, EC LV 738,652 and mPFC 17,753 spikes. The pipeline's
+summary table matches to every printed digit. Only wall-clock timings
+differ.
+
+Two consequences:
+
+1. **The recovered EC LII first GID is confirmed.** The new file records
+   `gid_first` (commit c93bf63), and EC LII's value is 1,097,544. That is
+   exactly what §27 reconstructed with a synapse-free rebuild, so the
+   corrected EC LII results in §27–28 stand. `decode_identity.py` now reads
+   `gid_first` from the file without an override and reproduces §28's values
+   (CA1 +0.766, EC LII +0.442).
+2. **The simulation is deterministic at fixed seed, configuration and
+   thread count.** §16 explained the block-to-block DG instability as
+   "chaotic amplification of run-to-run numerical noise (plausibly NEST's
+   multi-threaded, non-reproducible summation order)". That explanation is
+   refuted. Every §16 comparison changed some flag (reseed, schedule, novel
+   pattern omitted), so what §16 actually showed is **high sensitivity to
+   configuration**. Any small change in setup sends DG's anomalous blocks
+   elsewhere, but an identical run repeats exactly. The within-run
+   block-to-block instability itself (§15) is unaffected. Practically, an
+   identical rerun adds no information. Replication needs a different seed,
+   and any A/B arm difference reflects that arm's configuration plus chaotic
+   sensitivity, which is why every comparison here uses ≥2 seeds.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
