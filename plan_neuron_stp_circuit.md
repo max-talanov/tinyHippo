@@ -7,7 +7,7 @@ short-term plasticity (STP) as "Missing" in the NEST model.
 
 ![Tier A (dashed) and Tier B (whole figure) circuit](figures/neuron_stp_tier_b.svg)
 
-*Tier A = 1 PYR driven by spike generators. Tier B = Tier A plus PV basket, bistratified and O-LM cells.*
+*Orange = excitatory, blue = inhibitory. Tier A = 1 PYR driven by spike generators. Tier B = Tier A plus PV basket, bistratified and O-LM cells.*
 
 ## 0. Purpose and scope
 

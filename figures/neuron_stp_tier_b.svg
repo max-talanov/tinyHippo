@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 800" width="1120" height="800" font-family="Helvetica, Arial, sans-serif">
   <defs>
-    <marker id="ex" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1f5fa8"/></marker>
-    <marker id="in" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="8" markerHeight="8" orient="auto"><circle cx="5" cy="5" r="4" fill="#c0392b"/></marker>
+    <marker id="ex" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d9730d"/></marker>
+    <marker id="in" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="8" markerHeight="8" orient="auto"><circle cx="5" cy="5" r="4" fill="#1f5fa8"/></marker>
   </defs>
   <rect width="1120" height="800" fill="#ffffff"/>
   <text x="30" y="34" font-size="20" font-weight="bold" fill="#222">Minimal NEURON circuit for short-term plasticity (STP)</text>
-  <text x="30" y="56" font-size="13" fill="#555">Tier B = whole figure (1 pyramidal cell + 3 interneurons). Tier A = dashed box (1 pyramidal cell + spike-train generators, no interneurons).</text>
+  <text x="30" y="56" font-size="13" fill="#555">Orange = excitatory, blue = inhibitory. Tier B = whole figure (1 pyramidal cell + 3 interneurons). Tier A = dashed box (1 pyramidal cell + spike-train generators, no interneurons).</text>
 
   <!-- Tier A box -->
-  <rect x="24" y="150" width="640" height="610" rx="14" fill="#f6f9fd" stroke="#1f5fa8" stroke-width="2" stroke-dasharray="9 6"/>
-  <text x="40" y="176" font-size="14" font-weight="bold" fill="#1f5fa8">TIER A: 1 pyramidal cell (PYR), inputs are spike generators</text>
+  <rect x="24" y="150" width="640" height="610" rx="14" fill="#f7f7f7" stroke="#666" stroke-width="2" stroke-dasharray="9 6"/>
+  <text x="40" y="176" font-size="14" font-weight="bold" fill="#444">TIER A: 1 pyramidal cell (PYR), inputs are spike generators</text>
 
   <!-- CA3 generator -->
   <rect x="40" y="340" width="170" height="170" rx="10" fill="#fff" stroke="#444" stroke-width="1.5"/>
@@ -29,7 +29,7 @@
   <rect x="480" y="380" width="160" height="56" rx="10" fill="#fdf2e0" stroke="#b9770e" stroke-width="1.5"/>
   <text x="560" y="404" font-size="13" font-weight="bold" text-anchor="middle" fill="#222">apical_prox</text>
   <text x="560" y="422" font-size="11" text-anchor="middle" fill="#555">SR: SC synapses, NMDA</text>
-  <circle cx="560" cy="540" r="48" fill="#e3eefa" stroke="#1f5fa8" stroke-width="2"/>
+  <circle cx="560" cy="540" r="48" fill="#fdf2e0" stroke="#b9770e" stroke-width="2"/>
   <text x="560" y="536" font-size="14" font-weight="bold" text-anchor="middle" fill="#222">soma</text>
   <text x="560" y="554" font-size="11" text-anchor="middle" fill="#555">Na, Kdr, KA, h</text>
   <rect x="480" y="660" width="160" height="56" rx="10" fill="#fdf2e0" stroke="#b9770e" stroke-width="1.5"/>
@@ -37,49 +37,49 @@
   <text x="560" y="702" font-size="11" text-anchor="middle" fill="#555">SO</text>
 
   <!-- SC -> PYR (excitatory, STP) -->
-  <path d="M210,400 L480,408" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
-  <text x="345" y="388" font-size="12" font-weight="bold" fill="#1f5fa8" text-anchor="middle">★ SC → PYR (AMPA+NMDA)</text>
-  <path d="M210,470 L330,470 L330,688 L480,688" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
-  <text x="338" y="580" font-size="12" font-weight="bold" fill="#1f5fa8">★ SC → basal</text>
+  <path d="M210,400 L480,408" stroke="#d9730d" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
+  <text x="345" y="388" font-size="12" font-weight="bold" fill="#d9730d" text-anchor="middle">★ SC → PYR (AMPA+NMDA)</text>
+  <path d="M210,470 L330,470 L330,688 L480,688" stroke="#d9730d" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
+  <text x="338" y="580" font-size="12" font-weight="bold" fill="#d9730d">★ SC → basal</text>
 
   <!-- SC bus to interneurons (over the top) -->
-  <path d="M125,340 L125,118 L1050,118 L1050,420 L985,420" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
+  <path d="M125,340 L125,118 L1050,118 L1050,420 L985,420" stroke="#d9730d" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
   <path d="M1050,118 L1050,0" stroke="none"/>
-  <path d="M1050,420 L1050,600 L985,600" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
-  <text x="590" y="110" font-size="12" font-weight="bold" fill="#1f5fa8" text-anchor="middle">★ SC → BiS and SC → PV (feedforward drive)</text>
+  <path d="M1050,420 L1050,600 L985,600" stroke="#d9730d" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
+  <text x="590" y="110" font-size="12" font-weight="bold" fill="#d9730d" text-anchor="middle">★ SC → BiS and SC → PV (feedforward drive)</text>
 
   <!-- Interneurons -->
-  <rect x="820" y="200" width="160" height="70" rx="12" fill="#fbeaea" stroke="#c0392b" stroke-width="2"/>
+  <rect x="820" y="200" width="160" height="70" rx="12" fill="#e6eefa" stroke="#1f5fa8" stroke-width="2"/>
   <text x="900" y="228" font-size="15" font-weight="bold" text-anchor="middle" fill="#222">O-LM</text>
   <text x="900" y="248" font-size="11" text-anchor="middle" fill="#555">feedback, dendritic (SLM)</text>
-  <rect x="820" y="385" width="160" height="70" rx="12" fill="#fbeaea" stroke="#c0392b" stroke-width="2"/>
+  <rect x="820" y="385" width="160" height="70" rx="12" fill="#e6eefa" stroke="#1f5fa8" stroke-width="2"/>
   <text x="900" y="413" font-size="15" font-weight="bold" text-anchor="middle" fill="#222">Bistratified (BiS)</text>
   <text x="900" y="433" font-size="11" text-anchor="middle" fill="#555">feedforward, dendritic (SR, SO)</text>
-  <rect x="820" y="565" width="160" height="70" rx="12" fill="#fbeaea" stroke="#c0392b" stroke-width="2"/>
+  <rect x="820" y="565" width="160" height="70" rx="12" fill="#e6eefa" stroke="#1f5fa8" stroke-width="2"/>
   <text x="900" y="593" font-size="15" font-weight="bold" text-anchor="middle" fill="#222">PV basket</text>
   <text x="900" y="613" font-size="11" text-anchor="middle" fill="#555">feedforward, perisomatic</text>
 
   <!-- PYR axon bus -> interneurons (excitatory, STP) -->
-  <path d="M608,560 L700,560 L700,235 L820,235" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
-  <path d="M700,420 L820,420" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
-  <path d="M700,600 L820,600" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
-  <path d="M700,560 L700,600" stroke="#1f5fa8" stroke-width="2.5" fill="none"/>
-  <text x="690" y="330" font-size="12" font-weight="bold" fill="#1f5fa8" transform="rotate(-90 690 330)">★ PYR → INT (axon)</text>
-  <text x="760" y="226" font-size="11" fill="#1f5fa8" text-anchor="middle">★ facilitating</text>
+  <path d="M608,560 L700,560 L700,235 L820,235" stroke="#d9730d" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
+  <path d="M700,420 L820,420" stroke="#d9730d" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
+  <path d="M700,600 L820,600" stroke="#d9730d" stroke-width="2.5" fill="none" marker-end="url(#ex)"/>
+  <path d="M700,560 L700,600" stroke="#d9730d" stroke-width="2.5" fill="none"/>
+  <text x="690" y="330" font-size="12" font-weight="bold" fill="#d9730d" transform="rotate(-90 690 330)">★ PYR → INT (axon)</text>
+  <text x="760" y="226" font-size="11" fill="#d9730d" text-anchor="middle">★ facilitating</text>
 
   <!-- Inhibitory -->
   <path d="M820,250 L700,250" stroke="none"/>
-  <path d="M820,260 L760,260 L760,228 L640,228" stroke="#c0392b" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
-  <path d="M820,440 L760,440 L760,408 L640,408" stroke="#c0392b" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
-  <path d="M820,448 L790,448 L790,688 L640,688" stroke="#c0392b" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
-  <path d="M820,578 L740,578 L740,528 L608,528" stroke="#c0392b" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
-  <text x="772" y="660" font-size="11" fill="#c0392b" text-anchor="end">BiS → basal</text>
+  <path d="M820,260 L760,260 L760,228 L640,228" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
+  <path d="M820,440 L760,440 L760,408 L640,408" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
+  <path d="M820,448 L790,448 L790,688 L640,688" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
+  <path d="M820,578 L740,578 L740,528 L608,528" stroke="#1f5fa8" stroke-width="2.5" fill="none" marker-end="url(#in)"/>
+  <text x="772" y="660" font-size="11" fill="#1f5fa8" text-anchor="end">BiS → basal</text>
 
   <!-- Legend -->
   <rect x="690" y="690" width="400" height="90" rx="8" fill="#fafafa" stroke="#bbb"/>
-  <line x1="706" y1="712" x2="760" y2="712" stroke="#1f5fa8" stroke-width="2.5" marker-end="url(#ex)"/>
+  <line x1="706" y1="712" x2="760" y2="712" stroke="#d9730d" stroke-width="2.5" marker-end="url(#ex)"/>
   <text x="772" y="716" font-size="12" fill="#333">excitatory (AMPA; NMDA on PYR)</text>
-  <line x1="706" y1="738" x2="758" y2="738" stroke="#c0392b" stroke-width="2.5" marker-end="url(#in)"/>
+  <line x1="706" y1="738" x2="758" y2="738" stroke="#1f5fa8" stroke-width="2.5" marker-end="url(#in)"/>
   <text x="772" y="742" font-size="12" fill="#333">inhibitory (GABA_A), fixed weight at first</text>
   <text x="706" y="766" font-size="12" fill="#333">★ = Tsodyks–Markram STP: U, τ_rec, τ_fac fitted per pathway</text>
 
