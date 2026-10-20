@@ -5,7 +5,16 @@
 **Sibling plan:** [plan_branch_bio_plasticity.md](plan_branch_bio_plasticity.md), whose §1 lists
 short-term plasticity (STP) as "Missing" in the NEST model.
 
+![Tier A (dashed) and Tier B (whole figure) circuit](figures/neuron_stp_tier_b.svg)
+
+*Tier A = 1 PYR driven by spike generators. Tier B = Tier A plus PV basket, bistratified and O-LM cells.*
+
 ## 0. Purpose and scope
+
+**Decisions (confirmed):** the first milestone M1 is STP only (S0–S3 below) in the
+minimal circuit; tag/capture (S4–S5) follows. All timescales are simulated in real
+(biological) units, with no compression to match NEST. NEURON code lives in
+`neuron_stp/` inside this repository (§4).
 
 The NEST model uses Izhikevich point neurons. They have no dendrites, no NMDA
 Mg²⁺ block and no STP, so the spec's §4.2 mechanism (graded `V_seg` → Ca²⁺-like
@@ -143,8 +152,16 @@ Each result becomes a new numbered section in [RESULTS.md](RESULTS.md); older se
 | Spec §4.4.2 device data does not show graded SET | S5 predicts the graded response from the biology; it does not validate the device |
 | NEURON model and NEST Izhikevich model disagree on firing for the same input | S6/S7 cross-check cell; calibrate PYR rheobase by DC injection (CLAUDE.md rule), not by drive rate |
 
-## 6. Decisions needed
+## 6. Repository decision
 
-1. Confirm the reading of "STP" (short-term plasticity + the tag/capture extension) vs short-term plasticity only.
-2. Tier B (1 PYR + 3 INT) as the target, with Tier A as the first runnable milestone?
-3. Slow module in real time (recommended) or compressed to match NEST?
+NEURON work goes in `neuron_stp/` on `main` of this repository, developed on short
+feature branches merged early, not on one long-lived branch.
+
+- It touches no NEST code, so it does not depend on the G1–G3 gate in
+  plan_branch_bio_plasticity.md §0.
+- Its results (STP and tag parameters) feed `STCHook` and the NEST synapse models, and its
+  spec and falsification tests live here. A separate repo would split that loop.
+- A long-lived branch of a different code base drifts from `main` and makes the NEST export
+  awkward. A subdirectory avoids that.
+- Own `requirements` file and README (NEURON and `nrnivmodl` are not needed by the NEST code).
+- If it grows into an independent tool, `git subtree split` moves it to its own repo with history.
