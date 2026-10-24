@@ -1,6 +1,7 @@
 # Migrating tinyHippo to NEST GPU: options and plan
 
-Status: proposal, 2026-10-09. Based on a survey of how `replay_scaled.py` and `tiny.py` use
+Status: proposal, revised 2026-10-24 (first written 2026-10-09). The order, merge points and
+go/no-go gates with the LLM branch are in [plan_llm_gpu_joint.md](plan_llm_gpu_joint.md). Based on a survey of how `replay_scaled.py` and `tiny.py` use
 NEST, plus a read of the `nest/nest-gpu` source (`pythonlib/nestgpu.py`, `src/`, `doc/`).
 Items marked **[verify]** were not confirmed and are the first things the Phase 0 spike must settle.
 
@@ -12,6 +13,9 @@ Decision (2026-10-09), proposed by the project owner and refined here:
 |---|---|---|
 | `bio-plasticity` | **CPU NEST**, no GPU | Needs per-synapse tag state, pluggable `TagElement` backends, graded `V_seg` tag amplitude and possibly multi-compartment NESTML neurons. NEST GPU has one pair-STDP model and group-level neuron parameters. Its P1 step must reproduce `main` exactly, which is easiest on the backend that produced `main`. |
 | `llm-integration` | **NEST GPU, conditional on Phase 0** | The persistent sim server and the recall-latency target (under 60 s) are where simulation speed matters. It needs the full consolidation stack, so the GPU backend must first reproduce G1-G3. At 1% (~8k neurons) a GPU may not beat CPU, so the choice is made at L3 from measurements. |
+
+Current state of the entry gate (2026-10-24): G1/G2/G3 are **not yet met**; JOB H15-H17 (12%) are the
+deciding runs. This plan does not wait for them: Phases 0-1 only need `main` as it is.
 
 Consequences:
 - The Phase 1 backend shim lands on `main` **before** the branches fork, so each branch selects `--backend nest` or `--backend nestgpu` and stays mergeable.
@@ -32,6 +36,8 @@ PyNEST call counts in `replay_scaled.py` (5,873 lines) and `tiny.py`:
 | `static_synapse` + Python plasticity hooks (STC, MPFC assoc, Schaffer STDP, homeostasis) | 4 hooks | `GetConnections` / `GetConnectionFloatParam` / `SetConnectionStatus` between `Simulate` calls | Works in principle. Cost of `GetConnections` at 20M-2B synapses is the key unknown |
 | `stdp_synapse` | 6 mentions, deliberately avoided (CPU path runs ~300 syn/s) | single `stdp` synapse group (`tau_plus, tau_minus, lambda, alpha, mu_*, Wmax`), computed on the GPU | Fine for plain pair STDP. No triplet, dopamine or tagging models, so STC stays in Python |
 | `poisson_generator` (20) | background + replay drive | `poisson_generator` node, connected like a neuron | Good. Confirm per-target independence **[verify]** |
+| `sinusoidal_poisson_generator` (5 in `tiny.py`: theta, SWR ripple) and `inhomogeneous_poisson_generator` (open item in RESULTS) | oscillatory and scheduled drive | **none in NEST GPU**; has `poisson_generator` (`rate`, unique train per target) and `spike_generator` | **Gap.** Replace with rate-sliced `poisson_generator` (update `rate` every 1-2 ms between `Simulate` slices) or precomputed `spike_generator` trains. Must keep replay rho in band **[verify]** |
+| Group-clustered projections (`--schaffer-group-frac`, `--ca1-ec-group-frac`, `--cortex-group-frac`, `--mf-group-frac`, EC LII->CA3) | many per-group `Connect` calls | `Connect` on `NodeSeq` slices, `assigned_nodes`, or explicit source/target lists | Probably fine; check per-call overhead with hundreds of small `Connect`s |
 | `spike_recorder` (23), analysis on `events` | all scoring | `ActivateRecSpikeTimes` / `GetRecSpikeTimes`, or `CreateRecord` | Needs an adapter; cumulative buffer, so windowing per epoch is ours to do |
 | `multimeter` (6) | V_m/U_m traces | `CreateRecord` (file or in-memory) | Good |
 | `NodeCollection` slicing/arithmetic (26) | everywhere | `NodeSeq` (contiguous ranges only) | Needs a thin wrapper |
@@ -92,13 +98,15 @@ If not, stay on A and revisit C/D.
   `get_weights/set_weights(handle)`, `population` wrapper with `.ids`, slicing, `len`.
 - Re-route the ~190 direct `nest.*` calls in `replay_scaled.py` and `tiny.py` through it,
   keeping `--backend nest` as default.
-- Gate: a fixed-seed 1% run is statistically identical to today (replay rho, DG %active, EC counts;
-  not bit-identical, because DG is chaotic).
+- Gate: a fixed-seed, fixed-thread 1% run is **bit-identical** to today. CPU runs are reproducible
+  (RESULTS.md §29), so compare HDF5 contents / hash. Keep RNG call order unchanged when re-routing.
+  Cell positions keep coming from `gid_first`, which the backend must export.
 
 ### Phase 2: NEST GPU backend, single GPU, core network
 - Implement `nestgpu` backend. Bring up in order: DG-only, CA3, CA1, then replay with SWR drive.
-- Validation at 1% against CPU: replay rho (forward/reverse, SWR window only), DG 2-4% active,
-  CA3 completion, population rates. Use rate/z-score readouts, not Jaccard.
+- Validation at 1% against CPU, over >=2 seeds, as distributions (the GPU will not be bit-identical):
+  replay rho (forward/reverse, SWR window only), DG 2-4% active, CA3 completion, population rates,
+  and `decode_identity.py` home-group z. Use rate/z-score readouts, not Jaccard.
 - Gate: JOB A-equivalent at 12% on one GPU reproduces replay +0.6/-0.6 band.
 
 ### Phase 3: plasticity and cortex
@@ -128,7 +136,8 @@ If not, stay on A and revisit C/D.
 3. Connection query/set cost, which decides whether hooks speed up at all.
 4. No macOS/GPU dev loop; mitigated by the CPU backend and a small GPU box.
 5. Numerical differences (integrator, dt, delay rounding) shift calibrated f-I curves and E/I thresholds. CLAUDE.md warns CA1 collapses near its 0.2 Hz E/I threshold, so recalibrate rather than assume.
-6. Single-seed pilots: all GPU equivalence claims must be shown at 12% and across seeds.
+6. Theta/ripple generators have no direct GPU equivalent; a poor substitute changes replay itself.
+7. Single-seed pilots: all GPU equivalence claims must be shown at 12% and across seeds.
 
 ## 5. Effort (rough)
 

@@ -6,6 +6,8 @@ keeping its identity, does useful work for the LLM.
 
 - **Branch:** `llm-integration`, created from `main` at the commit where the gate
   below passes.
+- **Backend and schedule:** see the joint plan [plan_llm_gpu_joint.md](plan_llm_gpu_joint.md)
+  (CPU NEST is the reference; NEST GPU is conditional on its decisions D1, D2, D4).
 - **Sibling branch:** `bio-plasticity` ([plan_branch_bio_plasticity.md](plan_branch_bio_plasticity.md)),
   created from the same gate commit.
 
@@ -20,6 +22,10 @@ The full definition is in the plasticity plan, §0. In short:
 The shared scorer `decode_identity.py` is also this branch's recall decoder. Without
 G1 and G2 an LLM cannot get back *which* memory was stored, and the integration
 would not be meaningful.
+
+**State on 2026-10-24:** the gate is not met. `--cortex-group-frac`, `--mf-group-frac` and the
+EC LII->CA3 path are implemented; JOB H15 (G1), H16 (EC LII path) and H17 (G2 probe) at 12% decide it.
+Do not fork this branch until they pass.
 
 **Exception:** step L0 below has no dependency on the model and can start now.
 
@@ -86,9 +92,10 @@ text.
 |---|---|---|
 | Speed | 12%: 5.4h per 14 s of sim time. 1%: about 26 min per 14 blocks with the full stack (RESULTS §25–26). | Recall must take seconds to minutes, so it runs at 1% or in a reduced model, inside a **persistent sim server** that builds once and keeps the kernel alive. Sleep runs offline as a batch. |
 | Capacity | 3 patterns demonstrated | Measure a capacity and interference curve (L2) before building features on top of it |
+| Pattern capacity is structural | Identity travels through group wiring (home group `i % n_groups`, `*-group-frac` on each hop), fixed at build time | L1 cannot use arbitrary codes without a decision on how memories map to groups (joint plan D3). Validate G1 at N = 10 and 30 groups before building on it |
 | Stochasticity | DG is chaotic from block to block (CLAUDE.md) | Recall returns a ranked list with confidence, and can repeat the cue and aggregate |
 | No kernel serialization | A NEST network cannot be saved and reloaded | Checkpoint = seed + flags + plastic weight arrays. Rebuild deterministically, then write the weights back through the hooks' SynapseCollections. |
-| Backend | CPU NEST is the validated reference; GPU port is unproven | This branch is the candidate for NEST GPU ([nest_gpu_migration.md](nest_gpu_migration.md) §0). **Conditional:** decided at L3 from Phase 0 numbers (recall latency, hook get/set cost, per-neuron `b`). The `bio-plasticity` branch stays on CPU. Use the `simbackend` shim (`--backend nest|nestgpu`) so the choice is a flag, not a fork. |
+| Backend | CPU NEST is the validated reference; GPU port is unproven | This branch is the candidate for NEST GPU ([nest_gpu_migration.md](nest_gpu_migration.md) §0). **Conditional:** gates D1, D2, D4 in [plan_llm_gpu_joint.md](plan_llm_gpu_joint.md) (Phase 0 numbers, core equivalence, recall latency). The `bio-plasticity` branch stays on CPU. Use the `simbackend` shim (`--backend nest|nestgpu`) so the choice is a flag, not a fork. |
 
 ## 4. Phases
 
@@ -107,6 +114,8 @@ text.
 
 ### L1 — Arbitrary pattern codes in the simulator
 
+0. **Decide the memory-to-group mapping first** (joint plan D3: fixed bank, hash-to-group, or learned). The gate
+   works through group wiring, so a free-form code cannot be used until this is settled.
 1. Add `--pattern-file codes.npy`, holding N sparse drive vectors over EC LII (or over
    CA3 groups for the fallback), plus a schedule file. This generalizes today's
    ring positions and interleaved groups.
@@ -125,7 +134,7 @@ text.
 
 ### L3 — Persistent sim server and checkpointing
 
-0. **Backend decision.** Compare recall latency on `--backend nest` and `--backend nestgpu` at 1% and 12% (Phase 0 and 2 results). Choose GPU only if it wins and the G1/G2 gate reproduces on it; otherwise stay on CPU.
+0. **Backend decision (joint plan D4).** Compare recall latency on `--backend nest` and `--backend nestgpu` at 1% and 12% (Phase 0 and 2 results). Choose GPU only if it wins and the G1/G2 gate reproduces on it; otherwise stay on CPU.
 1. Build a long-lived process holding the built network, with the endpoints
    `encode(code)`, `sleep(n_blocks)`, `recall(partial_code)` and
    `checkpoint()`/`restore()`.
