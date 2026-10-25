@@ -408,6 +408,8 @@
 #   After 28 blocks: lesion, prime, then 12 interleaved cue trials (4 per
 #   pattern, 250 ms apart; ~1.5h extra at 12%). The log prints the G2 block;
 #   results are in the h5 group g2_recall. --time 15h.
+#   After RESULTS SS34 run only the two PATTERN_SOURCE=ca3 commands below (the EC LII
+#   mode puts no pattern in cortex at 12%).
 #  sbatch -A uab100 -q acc_resc --time=15:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
 #HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,CORTICAL_RECALL=1,SEED=202 run.sh

@@ -2011,6 +2011,64 @@ recurrent collaterals during training, so these are separate runs. Each
 has 28 blocks and runs on seeds 202 and 303, and the recall phase adds
 about 1.5h at 12%.
 
+## 34. JOB H15 and H16 at 12%: cortex grouping carries the pattern to EC LV on two seeds and to mPFC on one; the EC LII route does not reach cortex
+
+Eight runs, 12%, 28 blocks, seeds 202 and 303, uploaded 2026-10-16
+(`res/2026-10-16/replay/`), scored with `decode_identity.py --n-blocks 28`.
+`gid_first` is in every file. Chance accuracy is 0.33; the permutation floor is
+p = 0.0005 (2,000 shuffles). Tests are not corrected for the number of
+populations and decoders.
+
+**JOB H15 (CA3 mode)**: `--pattern-source ca3`, Schaffer and CA1→EC grouped
+0.7, with `--cortex-group-frac 0.7` against the same without it.
+
+| G1 decode, rate+timing (counts) | seed 202 | seed 303 | control 202 / 303 |
+|---|---|---|---|
+| EC LV | 0.75 (0.61), p = 0.0005 (0.0035) | 0.71 (0.75), p = 0.0005 (0.0005) | 0.39 (0.21) / 0.39 (0.14), n.s. |
+| mPFC | 0.64 (0.43), p = 0.0035 (0.20) | 0.36 (0.36), p = 0.38 (0.43) | 0.32 (0.25) / 0.29 (0.18), n.s. |
+| CA1 PYR | 0.93 (1.00), p = 0.0005 | 0.89 (1.00), p = 0.0005 | 0.93 / 0.93, p = 0.0005 |
+| EC LII | 0.71 (0.57) | 0.54 (0.43), p = 0.046 (0.19) | 0.61 / 0.71 |
+
+Home-group z (28 blocks), grouped arm: mPFC +0.125 and +0.116 (about +20%
+modulation), p = 0.0005 on both seeds; EC LV +0.30, p = 0.0005 on both. In the
+control, mPFC is −0.035 / −0.068 and EC LV +0.029 / +0.015 (n.s. on seed 303).
+
+**JOB H16 (EC LII mode)**: `--pattern-source ec-lii` with
+`--mf-group-frac 0.7`, EC LII→CA3 (K = 12, grouped 0.7) and cortex grouping,
+against the same without mossy-fibre and EC→CA3 grouping.
+
+| | grouped 202 / 303 | control 202 / 303 |
+|---|---|---|
+| EC LII G1 decode | 1.00 / 1.00 (injected directly) | 1.00 / 1.00 |
+| CA3 SUP home z (modulation) | +0.174 (+0.3%) / +0.162 (+0.4%) | −0.033 / −0.017 (−0.0%) |
+| CA1 PYR home z | +0.042 / +0.043 (n.s.) | −0.005 / +0.029 (n.s.) |
+| EC LV, mPFC G1 decode | all n.s. (best 0.46, p = 0.07) | all n.s. |
+
+**Findings**
+- **Cortex grouping is what puts the pattern in cortex, and it replicates.**
+  In CA3 mode, EC LV decodes at p ≤ 0.0035 on both seeds, and the control
+  shows nothing. mPFC's home-group signal is also positive on both seeds.
+- **G1 is not strictly met.** The mPFC decoder passes on one seed (rate+timing,
+  p = 0.0035) and fails on the other, and the counts decoder fails on both.
+  G1 needs mPFC at p < 0.01 on at least two seeds. EC LV, the gate's second
+  readout, passes on both.
+- **The EC LII route fails at 12%.** The §32 result (CA3 z +0.42, CA1 z +0.30
+  at 1%) does not replicate: CA3 modulation is +0.3% against +4.2% in CA3
+  mode, CA1 is null, and cortex does not decode. The grouped arm's small CA3
+  advantage over its control (+0.17 against −0.03) is real but far too weak
+  to carry the pattern further. EC LV's home-group signal appears in both H16
+  arms, so it comes from the directly driven EC LII, not from the hippocampus.
+- **The CA3-mode result relies on the scaffold.** In `--pattern-source ca3`
+  the pattern enters CA3 through the replay scaffold, the less plausible
+  fallback named in the branch plan. The plan allows the gate to be met that
+  way first.
+
+**Decision for JOB H17:** run the two CA3-mode arms only (seeds 202, 303). They
+add the grouped mPFC recurrent collaterals, which target the weak readout,
+and the G2 probe depends on this configuration. The EC LII-mode arms have no
+pattern in cortex to recall, so they are not worth about 24 h of compute
+until the EC LII route is fixed.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
