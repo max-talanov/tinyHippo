@@ -2069,6 +2069,68 @@ and the G2 probe depends on this configuration. The EC LII-mode arms have no
 pattern in cortex to recall, so they are not worth about 24 h of compute
 until the EC LII route is fixed.
 
+## 34. JOB H17 (seed 202): the group code reaches mPFC, and pattern-specific recall survives the lesion (G2 passes)
+
+JOB H17, CA3 mode, seed 202 (MN5 job 47997360): 12%, 28 blocks, the full
+grouped chain (Schaffer, CA1→EC, cortex at 0.7) plus `--cortical-recall`,
+which adds grouped mPFC recurrent collaterals. Run time 11.7h: 10.3h of
+simulation plus the lesion and recall phase.
+
+### G1: the code reaches every stage
+
+Scored with `decode_identity.py --n-blocks 28` (1,000 shuffles, p floor 0.001):
+
+| population | home-group z | blocks + | p | modulation | decoder acc (chance 0.33) |
+|---|---|---|---|---|---|
+| CA3 SUP | +1.071 | 28/28 | 0.001 | +4.2% | — |
+| CA1 PYR | +0.813 | 28/28 | 0.001 | +20.6% | 1.00 (counts), p=0.001 |
+| EC LII | +0.445 | 28/28 | 0.001 | +34.7% | 0.64, p=0.003 |
+| **EC LV** | **+0.350** | **27/28** | **0.001** | +5.6% | **0.75, p=0.001** |
+| **mPFC** | **+0.183** | **25/28** | **0.001** | **+22.8%** | 0.57 (rate+timing), **p=0.012**; counts 0.50, p=0.08 |
+
+For the first time, the pattern code is present in cortex. In mPFC, cells of
+the active pattern's home groups fire 23% more, in 25 of 28 blocks. Against
+the gate definition, **G1 passes in EC LV.** In mPFC the decoder misses the
+p < 0.01 bar narrowly (0.012), though mPFC's home-group test is p = 0.001.
+This is one seed.
+
+### G2: pattern-specific recall after the lesion passes
+
+The hippocampus is lesioned (816,340 CA1→cortex synapses zeroed) and mPFC
+is primed (120 Hz, w = 1.0). The probe from §33 then ran on three
+functional assemblies of 225 cells each, with 12 cue trials of 40%:
+
+| cued → | assembly 0 | assembly 1 | assembly 2 |
+|---|---|---|---|
+| pattern 0 | **0.065** | 0.041 | 0.021 |
+| pattern 1 | 0.033 | **0.094** | 0.021 |
+| pattern 2 | 0.027 | 0.038 | **0.035** |
+| pre-cue baseline | 0.027 | 0.031 | 0.018 |
+
+- **Specificity is +0.035, permutation p = 0.0005** (the floor for 2,000
+  shuffles). 11 of 12 trials are positive. **G2 passes on this seed.**
+- Patterns 0 and 1 are specific in every trial (mean +0.034 and +0.067).
+  Pattern 2 is not (+0.003).
+- The absolute effect is small: 6–9% of an assembly's uncued cells
+  reactivate, against a baseline of about 3%.
+- The functional assemblies follow the wiring. 51–59% of each assembly's
+  cells belong by wiring to the right pattern's home groups, against 33% by
+  chance.
+- The old whole-assembly probe still fails (+0.004 above baseline). That is
+  expected: it cues one mixed assembly of 741 cells and measures generic
+  completion, not pattern recall.
+
+### G3: replay is weak in this run
+
+Forward ρ is +0.494 (p = 0.003). Reverse ρ is −0.252 (p = 0.14), compared
+with −0.570 (p < 0.001) in JOB H14 (§28). Whether the extra grouping or
+mPFC recurrence weakens reverse replay, or this is seed variation, needs the
+other runs. The consolidation-blocking (PRP-block) falsification for G3 has
+not been rerun yet.
+
+**Status:** one seed. Seed 303 of JOB H17 and the JOB H15/H16 runs decide
+whether G1 in mPFC and G2 hold.
+
 ## Open items
 
 - **Cortical selectivity is unsolved.** Pattern identity is robustly encoded in
@@ -2121,7 +2183,12 @@ until the EC LII route is fixed.
   EC LII home-group z is +0.297 (+15.9%, 14/14 blocks) in JOB H12, against a
   null at 1%, where CA1's modulation was half as large. Replicated on seed
   303 (JOB H14, §28): z +0.442, +35.4%.
-- **Gate G1 not met: EC LV and mPFC decode weakly on one seed only** (§27–28;
+- **Gates, seed 202 (§34):** G1 passes in EC LV (decoder 0.75, p=0.001); in
+  mPFC the group code is present (z +0.183, 25/28 blocks, p=0.001) but the
+  decoder is borderline (p=0.012). G2 passes (specificity +0.035,
+  p=0.0005, patterns 0 and 1). Reverse replay is weak (ρ −0.25). Needs seed
+  303 and the PRP-block rerun for G3.
+- **Earlier status: EC LV and mPFC decode weakly on one seed only** (§27–28;
   H14 mPFC 0.64, p=0.027; H12 at chance). Next:
   group-cluster CA1→EC LV, EC LII→EC LV and EC LV→mPFC, and run the gate with
   `--n-swr ≥ 28`.
