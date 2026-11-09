@@ -419,6 +419,22 @@
 #DG_EC_CLUSTER_SIGMA=0.05,MF_GROUP_FRAC=0.7,EC_CA3_K=12,EC_CA3_W=1.0,EC_CA3_GROUP_FRAC=0.7,\
 #SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,CORTICAL_RECALL=1,SEED=202 run.sh
 #   (each repeated with SEED=303)
+#
+# JOB H18 — gate G3 at 12%: the Phase 5 falsification on the current model
+#   (RESULTS.md SS34). Identical to JOB H17's CA3-mode run except
+#   PRP_THRESHOLD=999: tags are set but never captured, so late-LTP on CA1->EC
+#   cannot happen. Claim 1 predicts, against JOB H17 on the SAME seed:
+#     - replay rho (fwd/rev) unchanged within seed variability;
+#     - STC L-LTP_total = 0 and the CA1->EC weight distribution flat;
+#     - DG still 2-4% active.
+#   Also worth reading: whether G2 recall specificity drops without capture
+#   (the mPFC association hook is separate from STC, so it need not vanish).
+#   Output tagged _ph5, so it cannot overwrite JOB H17's file.
+#  sbatch -A uab100 -q acc_resc --time=15:00:00 --export=ALL,SCALE=12,DG=1,N_PATTERNS=3,N_SWR=28,HET=0.30,\
+#HET_WCOMP=2.3,W_EC_DG=0.6,PP_RESIDUAL=0.9,DG_DELAY_JITTER=4.0,PATTERN_SOURCE=ca3,\
+#SCHAFFER_K=500,SCHAFFER_GROUP_FRAC=0.7,CA1_EC_GROUP_FRAC=0.7,CORTEX_GROUP_FRAC=0.7,CORTICAL_RECALL=1,\
+#PRP_THRESHOLD=999,SEED=202 run.sh
+#   (repeat with SEED=303)
 
 SCALE=${SCALE:-25}
 EC_LII=${EC_LII:-1}     # 1=add EC LII/III cortical target (default on)
